@@ -166,11 +166,13 @@ class NanobanaClient:
             Raw PNG bytes of the generated image.
         """
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
-        # The API documentation shows type must be "IMAGETOIMAGE" but it's now
-        # rejecting that. Try sending the minimal payload to see what works.
+        # According to official docs: https://docs.nanobananaapi.ai/nanobanana-api/generate-or-edit-image
+        # type must be "IMAGETOIAMGE" (note the typo in API - it's IAMGE not IMAGE!)
         payload = {
             "prompt": active_prompt,
+            "type": "IMAGETOIAMGE",
             "imageUrls": [image_url],
+            "callBackUrl": "https://api.nanobananaapi.ai/callback",  # Required by API
         }
         try:
             # ── Step 1: Submit task (short timeout — just an HTTP POST) ────────

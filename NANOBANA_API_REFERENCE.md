@@ -32,53 +32,36 @@ NANOBANA_API_KEY="366060ed2f3a25e5640ed861e43a15ac"
 
 ---
 
-## POST /generate Request
+## POST /generate Request (Generate or Edit Image)
 
-### ⚠️ CRITICAL: Two Versions Exist in Codebase
+**Official Endpoint:** `POST https://api.nanobananaapi.ai/api/v1/nanobanana/generate`
 
-#### **Version 1 (CURRENT - app/services/ai.py) - MINIMAL PAYLOAD:**
-```python
-payload = {
-    "prompt": str,           # Required: Text instruction for image enhancement
-    "type": "imagetoimage",  # Required: Use lowercase "imagetoimage"
-    "imageUrls": [str],      # Required: Array with one public image URL
-}
-```
+**Documentation:** https://docs.nanobananaapi.ai/nanobanana-api/generate-or-edit-image
 
-**Example:**
+### Required Parameters
+
 ```json
 {
-    "prompt": "Place the jewelry on a dark navy-blue sculpted stone surface. Soft directional studio lighting from the upper-left...",
-    "type": "imagetoimage",
-    "imageUrls": ["https://storage.supabase.co/...product.jpg"]
+    "prompt": "Text instruction for image editing",
+    "type": "IMAGETOIAMGE",
+    "imageUrls": ["https://example.com/image.jpg"],
+    "callBackUrl": "https://your-callback-url.com/callback"
 }
 ```
 
-#### **Version 2 (LEGACY - ai_clients.py) - WITH IMAGE_SIZE:**
-```python
-payload = {
-    "prompt": str,              # Required
-    "type": "IMAGETOIMAGE",     # Note: UPPERCASE - causes issues
-    "imageUrls": [str],         # Required
-    "image_size": "1:1"         # ⚠️ API rejects this: 'msg': 'Incorrect type'
-}
-```
+**CRITICAL NOTE:** The API uses a typo - the type value is `"IMAGETOIAMGE"` (not `"IMAGETOIMAGE"` or `"imagetoimage"`). This is what the official API expects.
 
-### Known Rejected Parameters
+### Optional Parameters
 
-These parameters were attempted but rejected by the API:
+- `numImages`: 1-4 (default: 1)
+- `image_size`: Aspect ratio like "1:1", "16:9", etc.
+- `watermark`: Text to add as watermark
 
-| Parameter | Values Tried | API Error | Status |
-|-----------|--------------|-----------|--------|
-| `image_size` | `"1:1"` | `'msg': 'Incorrect type'` | ❌ REJECTED |
-| `resolution` | `"1K"`, `"1k"` | `'msg': 'The image resolution is wrong'` | ❌ REJECTED |
-| `type` | `"IMAGETOIMAGE"` (uppercase) | `'msg': 'Incorrect type'` | ❌ REJECTED |
+### Pricing
 
-### Correct Flag
-
-```
-type MUST be lowercase: "imagetoimage"
-```
+Using this endpoint with `type: "IMAGETOIAMGE"`:
+- Charges basic Nano Banana API rates (~2 credits/image for image editing)
+- NOT the Pro rates (9-12 credits)
 
 ---
 
