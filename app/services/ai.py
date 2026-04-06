@@ -128,9 +128,8 @@ class ReveClient:
 class NanobanaClient:
     """Client for Nanobana scene enhancement API."""
 
-    # Using the standard generate endpoint with type="imagetoimage" for image-to-image editing
-    # This uses the basic Nano Banana API which costs only ~2 credits per image
-    # vs generate-pro which costs 9-12 credits per image
+    # Using the standard generate endpoint for image-to-image editing
+    # When imageUrls is provided, API automatically treats it as image-to-image
     # Pricing: Nano Banana Edit (image-to-image) = $0.02/image = ~2 credits
     _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
     _STATUS_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
@@ -146,12 +145,10 @@ class NanobanaClient:
     ) -> bytes:
         """Send background-removed image URL to Nanobana, return enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
-        # Use type="imagetoimage" (lowercase!) for the basic Nano Banana API
-        # This is the correct endpoint for image-to-image editing at 2 credits/image
-        # DO NOT use generate-pro which is 9 credits/image for text-to-image generation
+        # DO NOT include "type" parameter - API rejects it with "Incorrect type"
+        # The presence of imageUrls automatically makes it image-to-image
         payload = {
             "prompt": active_prompt,
-            "type": "imagetoimage",
             "imageUrls": [image_url],
         }
 
