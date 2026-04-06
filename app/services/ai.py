@@ -7,6 +7,7 @@ import httpx
 from app.config import settings
 from app.logging import logger
 
+
 async def _request_with_retry(
     client: httpx.AsyncClient,
     method: str,
@@ -23,12 +24,22 @@ async def _request_with_retry(
     # 429 means we're being throttled; 5xx means the upstream had a hiccup.
     # Both are worth retrying with a back-off — 4xx errors other than 429 are
     # our fault and retrying won't help.
-    if (response.status_code == 429 or response.status_code >= 500) and retry_count < max_retries:
+    if (
+        response.status_code == 429 or response.status_code >= 500
+    ) and retry_count < max_retries:
         wait = 2**retry_count
-        logger.warning(f"HTTP {response.status_code} from {url} — retrying in {wait}s ({retry_count + 1}/{max_retries})")
+        logger.warning(
+            f"HTTP {response.status_code} from {url} — retrying in {wait}s ({retry_count + 1}/{max_retries})"
+        )
         await asyncio.sleep(wait)
         return await _request_with_retry(
-            client, method, url, headers=headers, max_retries=max_retries, retry_count=retry_count + 1, **kwargs
+            client,
+            method,
+            url,
+            headers=headers,
+            max_retries=max_retries,
+            retry_count=retry_count + 1,
+            **kwargs,
         )
 
     if not response.is_success:
@@ -87,7 +98,12 @@ class ReveClient:
         try:
             async with httpx.AsyncClient(timeout=150.0) as client:
                 response = await _request_with_retry(
-                    client, "POST", self._BASE_URL, headers=self._headers, json=json_data, max_retries=settings.MAX_RETRIES
+                    client,
+                    "POST",
+                    self._BASE_URL,
+                    headers=self._headers,
+                    json=json_data,
+                    max_retries=settings.MAX_RETRIES,
                 )
 
             content_type = response.headers.get("Content-Type", "")
@@ -99,7 +115,9 @@ class ReveClient:
                     return base64.b64decode(data["image"])
                 return _extract_image_bytes(data)
 
-            logger.info(f"Reve response: {response.status_code}, {len(response.content)} bytes")
+            logger.info(
+                f"Reve response: {response.status_code}, {len(response.content)} bytes"
+            )
             return response.content
 
         except Exception as exc:
@@ -119,13 +137,15 @@ class NanobanaClient:
             "Content-Type": "application/json",
         }
 
-    async def enhance_image(self, image_url: str, *, prompt: str | None = None) -> bytes:
+    async def enhance_image(
+        self, image_url: str, *, prompt: str | None = None
+    ) -> bytes:
         """Send background-removed image URL to Nanobana, return enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
         payload = {
             "prompt": active_prompt,
             "imageUrls": [image_url],
-            "resolution": "4K",
+            "resolution": "1K",
             "aspectRatio": "1:1",
         }
 
@@ -134,7 +154,12 @@ class NanobanaClient:
             async with httpx.AsyncClient(timeout=60.0) as submit_client:
                 logger.info(f"Starting Nanobana task for {image_url}")
                 response = await _request_with_retry(
-                    submit_client, "POST", self._GENERATE_URL, headers=self._headers, json=payload, max_retries=settings.MAX_RETRIES
+                    submit_client,
+                    "POST",
+                    self._GENERATE_URL,
+                    headers=self._headers,
+                    json=payload,
+                    max_retries=settings.MAX_RETRIES,
                 )
                 task_data = response.json()
 
@@ -142,7 +167,9 @@ class NanobanaClient:
                 raise ValueError(f"Unexpected response (expected dict): {task_data!r}")
 
             data_obj = task_data.get("data") or {}
-            task_id = task_data.get("taskId") or data_obj.get("taskId") or data_obj.get("id")
+            task_id = (
+                task_data.get("taskId") or data_obj.get("taskId") or data_obj.get("id")
+            )
             if not task_id:
                 raise ValueError(f"Failed to get taskId from Nanobana: {task_data}")
 
@@ -158,17 +185,25 @@ class NanobanaClient:
 
                 async with httpx.AsyncClient(timeout=30.0) as poll_client:
                     status_response = await _request_with_retry(
-                        poll_client, "GET", f"{self._STATUS_URL}?taskId={task_id}", headers=self._headers, max_retries=2
+                        poll_client,
+                        "GET",
+                        f"{self._STATUS_URL}?taskId={task_id}",
+                        headers=self._headers,
+                        max_retries=2,
                     )
                     status_data = status_response.json()
 
                 # Log every 5th poll so you can see it's alive without flooding
                 if i % 5 == 0:
                     elapsed = (i + 1) * poll_interval
-                    logger.info(f"Nanobana waiting... {elapsed}s elapsed (poll {i+1}/{max_polls})  taskId={task_id}")
+                    logger.info(
+                        f"Nanobana waiting... {elapsed}s elapsed (poll {i + 1}/{max_polls})  taskId={task_id}"
+                    )
 
                 data = status_data.get("data") or {}
-                success = data.get("successFlag") in (1, "1") or status_data.get("successFlag") in (1, "1")
+                success = data.get("successFlag") in (1, "1") or status_data.get(
+                    "successFlag"
+                ) in (1, "1")
 
                 if success:
                     # The result URL can appear in several places depending on the API version.
@@ -183,23 +218,35 @@ class NanobanaClient:
                     )
 
                     if not res_url:
-                        logger.error(f"Nanobana task {task_id} succeeded but no image URL. Response: {status_data}")
-                        raise ValueError(f"Nanobana task {task_id} succeeded but no URL. Response: {status_data}")
+                        logger.error(
+                            f"Nanobana task {task_id} succeeded but no image URL. Response: {status_data}"
+                        )
+                        raise ValueError(
+                            f"Nanobana task {task_id} succeeded but no URL. Response: {status_data}"
+                        )
 
-                    logger.info(f"Nanobana task {task_id} complete — result URL: {res_url}")
+                    logger.info(
+                        f"Nanobana task {task_id} complete — result URL: {res_url}"
+                    )
 
                     # Step 3: Download the generated image from the result URL.
                     async with httpx.AsyncClient(timeout=120.0) as dl_client:
                         img_resp = await dl_client.get(res_url, follow_redirects=True)
                         img_resp.raise_for_status()
-                        logger.info(f"Downloaded Nanobana result: {len(img_resp.content)} bytes")
+                        logger.info(
+                            f"Downloaded Nanobana result: {len(img_resp.content)} bytes"
+                        )
                         return img_resp.content
 
                 fail_flag = data.get("failFlag") or status_data.get("failFlag")
                 if fail_flag in (1, "1"):
-                    raise RuntimeError(f"Nanobana task {task_id} failed. Response: {status_data}")
+                    raise RuntimeError(
+                        f"Nanobana task {task_id} failed. Response: {status_data}"
+                    )
 
-            raise TimeoutError(f"Nanobana task {task_id} did not complete within {max_polls * poll_interval}s")
+            raise TimeoutError(
+                f"Nanobana task {task_id} did not complete within {max_polls * poll_interval}s"
+            )
 
         except Exception as exc:
             logger.error(f"Nanobana enhance_image failed: {exc}", exc_info=True)
