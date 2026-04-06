@@ -166,10 +166,10 @@ class NanobanaClient:
             Raw PNG bytes of the generated image.
         """
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
-        # DO NOT include "type" parameter - API rejects it with "Incorrect type"
-        # The presence of imageUrls automatically makes it image-to-image
+        # API requires "type" parameter - try "image2image" (with 2, not "to")
         payload = {
             "prompt": active_prompt,
+            "type": "image2image",
             "imageUrls": [image_url],
         }
         try:
