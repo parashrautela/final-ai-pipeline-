@@ -133,8 +133,11 @@ class ReveClient:
 
 
 class NanobanaClient:
-    # Using generate-pro endpoint for Nano Banana Pro API
-    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
+    # Using the standard generate endpoint with type="imagetoimage" for image-to-image editing
+    # This uses the basic Nano Banana API which costs only ~2 credits per image
+    # vs generate-pro which costs 9-12 credits per image
+    # Pricing: Nano Banana Edit (image-to-image) = $0.02/image = ~2 credits
+    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
     _STATUS_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
 
     def __init__(self) -> None:
@@ -164,15 +167,13 @@ class NanobanaClient:
             Raw PNG bytes of the generated image.
         """
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
-        # IMPORTANT: editMode must be false for generation (not editing)
-        # This ensures consistent pricing at ~9 credits for Pro 1K
-        # Without editMode: false, API defaults to edit mode with variable charges (18+ credits)
+        # Use type="imagetoimage" (lowercase!) for the basic Nano Banana API
+        # This is the correct endpoint for image-to-image editing at 2 credits/image
+        # DO NOT use generate-pro which is 9 credits/image for text-to-image generation
         payload = {
             "prompt": active_prompt,
+            "type": "imagetoimage",
             "imageUrls": [image_url],
-            "resolution": "1K",
-            "aspectRatio": "1:1",
-            "editMode": False,
         }
         try:
             # ── Step 1: Submit task (short timeout — just an HTTP POST) ────────

@@ -380,22 +380,28 @@ The pipeline generates 4 professional variants:
 
 ## Notes on the Issue
 
-### Credits Charging Issue (Fixed)
-- User was charged 18 credits instead of expected ~9 credits for 1K Pro generation
-- **Root Cause:** Missing `"editMode": false` parameter in payload
-  - Without this flag, the API defaults to **edit mode** which has variable/higher pricing
-  - Edit mode charges vary based on complexity of the edit operation
-- **Additional Issues Found:**
-  - Legacy code used `/generate` endpoint (basic model) instead of `/generate-pro`
-  - Legacy code used `"type": "IMAGETOIMAGE"` (uppercase) and `"image_size": "1:1"` (rejected params)
-- **Fix Applied (2026-04-06):**
-  - Added `"editMode": false` to force generation mode (not edit mode)
-  - Updated both `app/services/ai.py` and `ai_clients.py` to use `/generate-pro` endpoint
-  - Removed deprecated parameters (`type`, `image_size`)
-  - Set explicit `"resolution": "1K"` and `"aspectRatio": "1:1"`
-- **Expected Pricing with Fix:**
-  - Pro 1K: ~9 credits ($0.09/image)
-  - Pro 4K: ~12 credits ($0.12/image)
+### Credits Charging Issue (Fixed 2026-04-06)
+- User was charged **18 credits** instead of expected **~2 credits** for 1K image-to-image editing
+- **Root Cause:** Using wrong endpoint! Was using `/generate-pro` (text-to-image) instead of `/generate` with `type: "imagetoimage"`
+
+**Pricing breakdown:**
+| Endpoint | Use Case | Cost |
+|----------|----------|------|
+| `/generate` with `type: "imagetoimage"` | Image-to-image editing | **$0.02/image (~2 credits)** ✅ |
+| `/generate-pro` | Text-to-image generation | $0.09-0.12/image (9-12 credits) ❌ |
+
+**Why 18 credits was happening:**
+- The code was using `/generate-pro` endpoint (9 credits per image)
+- With TEST_MODE=false, 2 images were being processed = 2 × 9 = 18 credits
+
+**Fix Applied:**
+1. Changed endpoint from `/generate-pro` to `/generate`
+2. Added `"type": "imagetoimage"` (lowercase!) to payload
+3. Removed unnecessary parameters (`resolution`, `aspectRatio`, `editMode`)
+
+**Expected Pricing After Fix:**
+- Per image: **~2 credits** ($0.02)
+- With TEST_MODE=false (4 variants): 4 × 2 = **~8 credits** total
 
 ---
 
@@ -414,28 +420,26 @@ The pipeline generates 4 professional variants:
 
 ## Summary
 
-✅ **Correct Payload (Pro API - Generation Mode):**
+✅ **Correct Payload (Image-to-Image Editing - 2 credits):**
 ```json
 {
     "prompt": "...",
-    "imageUrls": ["https://..."],
-    "resolution": "1K",
-    "aspectRatio": "1:1",
-    "editMode": false
+    "type": "imagetoimage",
+    "imageUrls": ["https://..."]
 }
 ```
 
+**Endpoint:** `POST https://api.nanobananaapi.ai/api/v1/nanobanana/generate`
+
 ❌ **Incorrect Payloads to Avoid:**
 ```json
-// NO: Missing editMode (defaults to edit mode with variable charges)
+// NO: Using generate-pro endpoint (charges 9+ credits instead of 2)
+// Endpoint: /generate-pro
 {"prompt": "...", "imageUrls": [...], "resolution": "1K"}
 
-// NO: uppercase type (old API format)
+// NO: uppercase type (rejected by API)
 {"prompt": "...", "type": "IMAGETOIMAGE", "imageUrls": [...]}
 
 // NO: image_size parameter (rejected by API)
 {"prompt": "...", "type": "imagetoimage", "imageUrls": [...], "image_size": "1:1"}
-
-// NO: resolution parameter on basic /generate endpoint
-{"prompt": "...", "type": "imagetoimage", "imageUrls": [...], "resolution": "1K"}
 ```

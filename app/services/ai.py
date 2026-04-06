@@ -128,8 +128,11 @@ class ReveClient:
 class NanobanaClient:
     """Client for Nanobana scene enhancement API."""
 
-    # Using generate-pro endpoint for Nano Banana Pro API (high quality generation)
-    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
+    # Using the standard generate endpoint with type="imagetoimage" for image-to-image editing
+    # This uses the basic Nano Banana API which costs only ~2 credits per image
+    # vs generate-pro which costs 9-12 credits per image
+    # Pricing: Nano Banana Edit (image-to-image) = $0.02/image = ~2 credits
+    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
     _STATUS_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
 
     def __init__(self) -> None:
@@ -143,22 +146,22 @@ class NanobanaClient:
     ) -> bytes:
         """Send background-removed image URL to Nanobana, return enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
-        # IMPORTANT: editMode must be false for generation (not editing)
-        # This ensures we get charged for generation, not edit mode which varies in cost
-        # Pricing: Pro 1K = ~9 credits, Pro 4K = ~12 credits
-        # Without editMode: false, API may default to edit mode with higher/variable charges
+        # Use type="imagetoimage" (lowercase!) for the basic Nano Banana API
+        # This is the correct endpoint for image-to-image editing at 2 credits/image
+        # DO NOT use generate-pro which is 9 credits/image for text-to-image generation
         payload = {
             "prompt": active_prompt,
+            "type": "imagetoimage",
             "imageUrls": [image_url],
-            "resolution": "1K",
-            "aspectRatio": "1:1",
-            "editMode": False,
         }
 
         try:
             # Step 1: Submit the generation task and get back a task ID.
             async with httpx.AsyncClient(timeout=60.0) as submit_client:
-                logger.info(f"Starting Nanobana task for {image_url}")
+                logger.info(
+                    f"Nanobana request — URL: {self._GENERATE_URL}, "
+                    f"payload: {payload}"
+                )
                 response = await _request_with_retry(
                     submit_client,
                     "POST",
@@ -168,6 +171,7 @@ class NanobanaClient:
                     max_retries=settings.MAX_RETRIES,
                 )
                 task_data = response.json()
+                logger.info(f"Nanobana response: {task_data}")
 
             if not isinstance(task_data, dict):
                 raise ValueError(f"Unexpected response (expected dict): {task_data!r}")
