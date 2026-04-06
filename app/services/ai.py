@@ -128,6 +128,7 @@ class ReveClient:
 class NanobanaClient:
     """Client for Nanobana scene enhancement API."""
 
+    # Using generate-pro endpoint for Nano Banana Pro API (high quality generation)
     _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
     _STATUS_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
 
@@ -142,11 +143,16 @@ class NanobanaClient:
     ) -> bytes:
         """Send background-removed image URL to Nanobana, return enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
+        # IMPORTANT: editMode must be false for generation (not editing)
+        # This ensures we get charged for generation, not edit mode which varies in cost
+        # Pricing: Pro 1K = ~9 credits, Pro 4K = ~12 credits
+        # Without editMode: false, API may default to edit mode with higher/variable charges
         payload = {
             "prompt": active_prompt,
             "imageUrls": [image_url],
             "resolution": "1K",
             "aspectRatio": "1:1",
+            "editMode": False,
         }
 
         try:

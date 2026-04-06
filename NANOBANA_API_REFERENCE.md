@@ -380,11 +380,22 @@ The pipeline generates 4 professional variants:
 
 ## Notes on the Issue
 
-### Credits Charging Issue (Original Bug)
-- User was charged 18 credits (4K resolution) instead of 1K
-- **Root Cause:** Previous code included `"image_size": "1:1"` and/or `"type": "IMAGETOIMAGE"` which may have been incorrectly triggering higher resolution
-- **Fix:** Removed both fields, using minimal payload with only `prompt`, `type: "imagetoimage"`, and `imageUrls`
-- **Current Status:** Minimal payload in [app/services/ai.py](app/services/ai.py)
+### Credits Charging Issue (Fixed)
+- User was charged 18 credits instead of expected ~9 credits for 1K Pro generation
+- **Root Cause:** Missing `"editMode": false` parameter in payload
+  - Without this flag, the API defaults to **edit mode** which has variable/higher pricing
+  - Edit mode charges vary based on complexity of the edit operation
+- **Additional Issues Found:**
+  - Legacy code used `/generate` endpoint (basic model) instead of `/generate-pro`
+  - Legacy code used `"type": "IMAGETOIMAGE"` (uppercase) and `"image_size": "1:1"` (rejected params)
+- **Fix Applied (2026-04-06):**
+  - Added `"editMode": false` to force generation mode (not edit mode)
+  - Updated both `app/services/ai.py` and `ai_clients.py` to use `/generate-pro` endpoint
+  - Removed deprecated parameters (`type`, `image_size`)
+  - Set explicit `"resolution": "1K"` and `"aspectRatio": "1:1"`
+- **Expected Pricing with Fix:**
+  - Pro 1K: ~9 credits ($0.09/image)
+  - Pro 4K: ~12 credits ($0.12/image)
 
 ---
 
@@ -403,23 +414,28 @@ The pipeline generates 4 professional variants:
 
 ## Summary
 
-✅ **Correct Payload:**
+✅ **Correct Payload (Pro API - Generation Mode):**
 ```json
 {
     "prompt": "...",
-    "type": "imagetoimage",
-    "imageUrls": ["https://..."]
+    "imageUrls": ["https://..."],
+    "resolution": "1K",
+    "aspectRatio": "1:1",
+    "editMode": false
 }
 ```
 
 ❌ **Incorrect Payloads to Avoid:**
 ```json
-// NO: uppercase type
+// NO: Missing editMode (defaults to edit mode with variable charges)
+{"prompt": "...", "imageUrls": [...], "resolution": "1K"}
+
+// NO: uppercase type (old API format)
 {"prompt": "...", "type": "IMAGETOIMAGE", "imageUrls": [...]}
 
-// NO: image_size parameter
+// NO: image_size parameter (rejected by API)
 {"prompt": "...", "type": "imagetoimage", "imageUrls": [...], "image_size": "1:1"}
 
-// NO: resolution parameter
+// NO: resolution parameter on basic /generate endpoint
 {"prompt": "...", "type": "imagetoimage", "imageUrls": [...], "resolution": "1K"}
 ```

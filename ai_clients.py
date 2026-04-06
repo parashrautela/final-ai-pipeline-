@@ -13,6 +13,7 @@ from logging_config import logger
 # Retry helper
 # ---------------------------------------------------------------------------
 
+
 async def _request_with_retry(
     client: httpx.AsyncClient,
     method: str,
@@ -26,16 +27,23 @@ async def _request_with_retry(
     """Generic request helper with exponential back-off on 429 / 5xx."""
     response = await client.request(method, url, headers=headers, **kwargs)
 
-    if (response.status_code == 429 or response.status_code >= 500) and retry_count < max_retries:
-        wait = 2 ** retry_count
+    if (
+        response.status_code == 429 or response.status_code >= 500
+    ) and retry_count < max_retries:
+        wait = 2**retry_count
         logger.warning(
             f"HTTP {response.status_code} from {url} — retrying in {wait}s "
             f"({retry_count + 1}/{max_retries})"
         )
         await asyncio.sleep(wait)
         return await _request_with_retry(
-            client, method, url, headers=headers, max_retries=max_retries,
-            retry_count=retry_count + 1, **kwargs
+            client,
+            method,
+            url,
+            headers=headers,
+            max_retries=max_retries,
+            retry_count=retry_count + 1,
+            **kwargs,
         )
 
     if not response.is_success:
@@ -50,9 +58,7 @@ async def _request_with_retry(
 
 
 async def _post_with_retry(
-    client: httpx.AsyncClient,
-    url: str,
-    **kwargs
+    client: httpx.AsyncClient, url: str, **kwargs
 ) -> httpx.Response:
     """Backwards compat wrapper for POST."""
     return await _request_with_retry(client, "POST", url, **kwargs)
@@ -68,6 +74,7 @@ async def _post_with_retry(
 # Returns: raw image bytes (PNG)
 # ---------------------------------------------------------------------------
 
+
 class ReveClient:
     _BASE_URL = "https://api.reve.com/v1/image/edit"
 
@@ -81,11 +88,11 @@ class ReveClient:
         """
         # Encode image to base64
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
-        
+
         json_data = {
             "edit_instruction": settings.REVE_PROMPT,
             "reference_image": base64_image,
-            "version": "latest"
+            "version": "latest",
         }
 
         try:
@@ -97,8 +104,8 @@ class ReveClient:
                     json=json_data,
                     max_retries=settings.MAX_RETRIES,
                 )
-            
-            # The subagent didn't specify the response format, 
+
+            # The subagent didn't specify the response format,
             # let's check if it returns raw bytes or JSON with base64.
             # Most JSON-in APIs return JSON-out.
             content_type = response.headers.get("Content-Type", "")
@@ -109,8 +116,10 @@ class ReveClient:
                     return base64.b64decode(data["image"])
                 # Fallback to the generic extractor (for Gemini/complex formats)
                 return _extract_image_bytes(data)
-            
-            logger.info(f"Reve response: {response.status_code}, {len(response.content)} bytes")
+
+            logger.info(
+                f"Reve response: {response.status_code}, {len(response.content)} bytes"
+            )
             return response.content
 
         except Exception as exc:
@@ -122,9 +131,11 @@ class ReveClient:
 # Nanobana  —  scene enhancement
 # ---------------------------------------------------------------------------
 
+
 class NanobanaClient:
-    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
-    _STATUS_URL   = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
+    # Using generate-pro endpoint for Nano Banana Pro API
+    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
+    _STATUS_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
 
     def __init__(self) -> None:
         self._headers = {
@@ -132,7 +143,9 @@ class NanobanaClient:
             "Content-Type": "application/json",
         }
 
-    async def enhance_image(self, image_url: str, *, prompt: str | None = None) -> bytes:
+    async def enhance_image(
+        self, image_url: str, *, prompt: str | None = None
+    ) -> bytes:
         """
         Send a background-removed image URL to Nanobana for scene enhancement.
 
@@ -151,21 +164,27 @@ class NanobanaClient:
             Raw PNG bytes of the generated image.
         """
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
+        # IMPORTANT: editMode must be false for generation (not editing)
+        # This ensures consistent pricing at ~9 credits for Pro 1K
+        # Without editMode: false, API defaults to edit mode with variable charges (18+ credits)
         payload = {
             "prompt": active_prompt,
-            "type": "IMAGETOIMAGE",
             "imageUrls": [image_url],
-            "image_size": "1:1"
+            "resolution": "1K",
+            "aspectRatio": "1:1",
+            "editMode": False,
         }
         try:
             # ── Step 1: Submit task (short timeout — just an HTTP POST) ────────
             async with httpx.AsyncClient(timeout=60.0) as submit_client:
                 logger.info(f"Starting Nanobana task for {image_url}")
                 response = await _request_with_retry(
-                    submit_client, "POST", self._GENERATE_URL,
+                    submit_client,
+                    "POST",
+                    self._GENERATE_URL,
                     headers=self._headers,
                     json=payload,
-                    max_retries=settings.MAX_RETRIES
+                    max_retries=settings.MAX_RETRIES,
                 )
                 task_data = response.json()
 
@@ -182,28 +201,27 @@ class NanobanaClient:
             # the key is absent, not when it is present with a null value.
             data_obj = task_data.get("data") or {}
             task_id = (
-                task_data.get("taskId")
-                or data_obj.get("taskId")
-                or data_obj.get("id")
+                task_data.get("taskId") or data_obj.get("taskId") or data_obj.get("id")
             )
             if not task_id:
                 raise ValueError(f"Failed to get taskId from Nanobana: {task_data}")
 
             logger.info(f"Nanobana task submitted: {task_id}, beginning poll loop")
 
-            # ── Step 2: Poll for completion (separate client — no global timeout) 
-            max_polls = 60        # 60 × 5 s = 5 min maximum
-            poll_interval = 5     # seconds between polls
+            # ── Step 2: Poll for completion (separate client — no global timeout)
+            max_polls = 60  # 60 × 5 s = 5 min maximum
+            poll_interval = 5  # seconds between polls
 
             for i in range(max_polls):
                 await asyncio.sleep(poll_interval)
 
                 async with httpx.AsyncClient(timeout=30.0) as poll_client:
                     status_response = await _request_with_retry(
-                        poll_client, "GET",
+                        poll_client,
+                        "GET",
                         f"{self._STATUS_URL}?taskId={task_id}",
                         headers=self._headers,
-                        max_retries=2
+                        max_retries=2,
                     )
                     status_data = status_response.json()
 
@@ -217,10 +235,9 @@ class NanobanaClient:
                 data = status_data.get("data") or {}
 
                 # successFlag can be int 1 or string "1" — handle both
-                success = (
-                    data.get("successFlag") in (1, "1")
-                    or status_data.get("successFlag") in (1, "1")
-                )
+                success = data.get("successFlag") in (1, "1") or status_data.get(
+                    "successFlag"
+                ) in (1, "1")
 
                 if success:
                     # Try every known field path for the result image URL
@@ -245,7 +262,9 @@ class NanobanaClient:
                             f"Response: {status_data}"
                         )
 
-                    logger.info(f"Nanobana task {task_id} complete — result URL: {res_url}")
+                    logger.info(
+                        f"Nanobana task {task_id} complete — result URL: {res_url}"
+                    )
 
                     # ── Step 3: Download result (separate client, generous timeout) ─
                     async with httpx.AsyncClient(timeout=120.0) as dl_client:
@@ -299,6 +318,7 @@ def _extract_image_bytes(response_json: dict) -> bytes:
             text = part.get("text", "")
             if text.startswith("http"):
                 import httpx as _httpx
+
                 r = _httpx.get(text, timeout=60.0, follow_redirects=True)
                 r.raise_for_status()
                 return r.content
@@ -306,7 +326,9 @@ def _extract_image_bytes(response_json: dict) -> bytes:
         raise ValueError(f"Could not extract image from Nanobana parts: {parts}")
 
     except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"Unexpected Nanobana response structure: {response_json}") from exc
+        raise ValueError(
+            f"Unexpected Nanobana response structure: {response_json}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -315,4 +337,3 @@ def _extract_image_bytes(response_json: dict) -> bytes:
 
 reve_client = ReveClient()
 nanobana_client = NanobanaClient()
-
