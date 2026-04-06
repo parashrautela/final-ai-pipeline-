@@ -25,7 +25,7 @@ from app.worker import worker_loop
 # the default here is a fallback for any route we forget to decorate.
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
-        
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start the background worker as soon as the server is ready.
@@ -54,11 +54,13 @@ app.add_middleware(
         "http://localhost:3000",
         "https://ai-pipeline-frontend.vercel.app",
         "https://jwellery.arpitray.in",
+        "https://jewel-india-frontend-yws1.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 @app.middleware("http")
 async def ensure_cors_headers(request, call_next):
@@ -72,7 +74,9 @@ async def ensure_cors_headers(request, call_next):
         response = JSONResponse({"detail": "Internal Server Error"}, status_code=500)
 
     if "Access-Control-Allow-Origin" not in response.headers:
-        response.headers["Access-Control-Allow-Origin"] = "https://ai-pipeline-frontend.vercel.app"
+        response.headers["Access-Control-Allow-Origin"] = (
+            "https://ai-pipeline-frontend.vercel.app"
+        )
         response.headers["Access-Control-Allow-Credentials"] = "true"
 
     return response
@@ -83,7 +87,6 @@ async def ensure_cors_headers(request, call_next):
 async def health_check(request: Request):
     return {"status": "ok", "environment": settings.ENVIRONMENT}
 
-        
 
 # 5 requests/minute per IP — the pipeline is expensive (Reve + 4x Nanobana),
 # so we keep this tight to avoid runaway costs from a single client.
@@ -92,7 +95,9 @@ async def health_check(request: Request):
 async def process_upload(
     request: Request,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(..., description="Raw jewellery image (JPEG/PNG/WebP, max 10MB)"),
+    file: UploadFile = File(
+        ..., description="Raw jewellery image (JPEG/PNG/WebP, max 10MB)"
+    ),
     title: str = "Untitled",
     jewellery_type: str = "",
 ):
@@ -109,11 +114,15 @@ async def process_upload(
     # Strip charset suffix from content-type before comparing (e.g. 'image/jpeg; charset=...')
     content_type = (file.content_type or "image/jpeg").split(";")[0].strip()
     if content_type not in settings.ALLOWED_MIME_TYPES:
-        raise HTTPException(status_code=415, detail=f"Unsupported file type '{content_type}'")
+        raise HTTPException(
+            status_code=415, detail=f"Unsupported file type '{content_type}'"
+        )
 
     raw_bytes = await file.read()
     if len(raw_bytes) > settings.MAX_FILE_SIZE_BYTES:
-        raise HTTPException(status_code=413, detail=f"File too large ({len(raw_bytes):,} bytes)")
+        raise HTTPException(
+            status_code=413, detail=f"File too large ({len(raw_bytes):,} bytes)"
+        )
 
     product = await create_product(title=title, jewellery_type=jewellery_type)
     product_id = product["id"]
@@ -159,18 +168,24 @@ async def process_image(
     if file is not None:
         content_type = (file.content_type or "image/jpeg").split(";")[0].strip()
         if content_type not in settings.ALLOWED_MIME_TYPES:
-            raise HTTPException(status_code=415, detail=f"Unsupported file type '{content_type}'")
+            raise HTTPException(
+                status_code=415, detail=f"Unsupported file type '{content_type}'"
+            )
 
         raw_bytes = await file.read()
         if len(raw_bytes) > settings.MAX_FILE_SIZE_BYTES:
-            raise HTTPException(status_code=413, detail=f"File too large ({len(raw_bytes):,} bytes)")
+            raise HTTPException(
+                status_code=413, detail=f"File too large ({len(raw_bytes):,} bytes)"
+            )
 
         raw_url = upload_raw_image(raw_bytes, image_id, content_type)
         await update_product_image_url(image_id, raw_url)
         product = {**product, "image_url": raw_url}
 
     elif not product.get("image_url"):
-        raise HTTPException(status_code=422, detail=f"Product '{image_id}' has no image")
+        raise HTTPException(
+            status_code=422, detail=f"Product '{image_id}' has no image"
+        )
 
     background_tasks.add_task(_run_product_pipeline, product)
     logger.info("Processing queued", extra={"product_id": image_id})
@@ -207,6 +222,11 @@ async def _run_product_pipeline(product: dict) -> None:
     product_id = product["id"]
     try:
         generated_urls = await process_product_image(product)
-        logger.info(f"Pipeline finished — {len(generated_urls)} variant(s)", extra={"product_id": product_id})
+        logger.info(
+            f"Pipeline finished — {len(generated_urls)} variant(s)",
+            extra={"product_id": product_id},
+        )
     except Exception as exc:
-        logger.error("Product pipeline failed", extra={"product_id": product_id}, exc_info=exc)
+        logger.error(
+            "Product pipeline failed", extra={"product_id": product_id}, exc_info=exc
+        )
