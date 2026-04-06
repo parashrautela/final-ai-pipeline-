@@ -145,11 +145,11 @@ class NanobanaClient:
     ) -> bytes:
         """Send background-removed image URL to Nanobana, return enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
-        # API requires "type" parameter - try "image2image" (with 2, not "to")
         payload = {
             "prompt": active_prompt,
-            "type": "image2image",
+            "type": "IMAGETOIMAGE",
             "imageUrls": [image_url],
+            "model": "nanobanana",  # Explicitly use basic model, not Pro (cheaper)
         }
 
         try:
