@@ -151,7 +151,6 @@ class NanobanaClient:
             "prompt": active_prompt,
             "imageUrls": [image_url],
         }
-
         try:
             # Step 1: Submit the generation task and get back a task ID.
             async with httpx.AsyncClient(timeout=60.0) as submit_client:
