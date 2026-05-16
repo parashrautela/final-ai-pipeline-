@@ -55,7 +55,8 @@ app.add_middleware(
         "https://ai-pipeline-frontend.vercel.app",
         "https://jwellery.arpitray.in",
         "https://jewel-india-frontend-yws1.vercel.app",
-        "www.jewelindia.shop"
+        "www.jewelindia.shop",
+        "https://app.jewelindia.shop"
     ],
     allow_credentials=True,
     allow_methods=["*"],
