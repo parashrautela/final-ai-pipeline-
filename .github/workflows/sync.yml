@@ -13,5 +13,5 @@ jobs:
 
       - name: Push to new repo
         run: |
-          git remote add new https://REDACTED@github.com/jwellery44-prog/ai-pipeline
+          git remote add new https://${{ secrets.PAT }}@github.com/jwellery44-prog/ai-pipeline.git
           git push new main
