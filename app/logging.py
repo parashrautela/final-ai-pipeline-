@@ -18,7 +18,8 @@ class ReadableFormatter(logging.Formatter):
 
         line = f"{ts}  {record.levelname:<7}  {record.getMessage()}{ctx}"
 
-        # Append traceback only for errors — keeps INFO lines clean
+        # Append traceback onl
+        #  for — keeps INFO lines clean
         if record.exc_info:
             line += "\n" + self.formatException(record.exc_info)
 

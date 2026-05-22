@@ -48,7 +48,6 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "https://ai-pipeline-frontend.vercel.app",
     "https://jwellery.arpitray.in",
     "https://jewel-india-frontend-yws1.vercel.app",
     "https://www.jewelindia.shop",
@@ -92,8 +91,6 @@ async def health_check(request: Request):
     return {"status": "ok", "environment": settings.ENVIRONMENT}
 
 
-# 5 requests/minute per IP — the pipeline is expensive (Reve + 4x Nanobana),
-# so we keep this tight to avoid runaway costs from a single client.
 @app.post("/process", status_code=202)
 @limiter.limit("5/minute")
 async def process_upload(
@@ -131,15 +128,14 @@ async def process_upload(
     product = await create_product(title=title, jewellery_type=jewellery_type)
     product_id = product["id"]
 
-    # Store the raw image first so the product row always has something
-    # to show while the AI pipeline is still running.
+   
     raw_url = upload_raw_image(raw_bytes, product_id, content_type)
     await update_product_image_url(product_id, raw_url)
     product = {**product, "image_url": raw_url}
 
     logger.info("Product created", extra={"product_id": product_id, "raw_url": raw_url})
 
-    # Fire and forget — respond immediately, pipeline runs in background.
+    
     background_tasks.add_task(_run_product_pipeline, product)
 
     return {
