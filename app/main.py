@@ -46,18 +46,20 @@ app.state.limiter = limiter
 # instead of a generic 500 when a rate limit is hit.
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://ai-pipeline-frontend.vercel.app",
+    "https://jwellery.arpitray.in",
+    "https://jewel-india-frontend-yws1.vercel.app",
+    "https://www.jewelindia.shop",
+    "https://app.jewelindia.shop"
+]
+
 # Whitelist only the origins we actually own. Wildcard would be simpler but
 # breaks cookies/credentials on the frontend.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://ai-pipeline-frontend.vercel.app",
-        "https://jwellery.arpitray.in",
-        "https://jewel-india-frontend-yws1.vercel.app",
-        "www.jewelindia.shop",
-        "https://app.jewelindia.shop"
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -76,10 +78,10 @@ async def ensure_cors_headers(request, call_next):
         response = JSONResponse({"detail": "Internal Server Error"}, status_code=500)
 
     if "Access-Control-Allow-Origin" not in response.headers:
-        response.headers["Access-Control-Allow-Origin"] = (
-            "https://ai-pipeline-frontend.vercel.app"
-        )
-        response.headers["Access-Control-Allow-Credentials"] = "true"
+        origin = request.headers.get("origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
 
     return response
 
