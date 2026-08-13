@@ -223,16 +223,28 @@ def compile_chamak_prompt(
             f"Subtly integrate the best complementary accents: {sec_traits}."
         )
 
-    # Slider weighting integration
+    # Slider weighting integration: map attribute IDs to actual feature names
     if slider_weights:
-        high_weight_attrs = [k for k, w in slider_weights.items() if w >= 0.6]
-        low_weight_attrs = [k for k, w in slider_weights.items() if w < 0.4]
-        if high_weight_attrs:
-            clean_high = ", ".join(k.replace("attr_", "attribute ").replace("_", " ") for k in high_weight_attrs)
-            fusion_directives.append(f"Emphasize strong presence of {clean_high}.")
-        if low_weight_attrs:
-            clean_low = ", ".join(k.replace("attr_", "attribute ").replace("_", " ") for k in low_weight_attrs)
-            fusion_directives.append(f"Keep subtle and delicate: {clean_low}.")
+        high_features: list[str] = []
+        low_features: list[str] = []
+        for k, w in slider_weights.items():
+            feature_name = k.replace("_", " ")
+            if k.startswith("attr_"):
+                try:
+                    idx = int(k.split("attr_")[1])
+                    if idx < len(img1_strengths):
+                        feature_name = img1_strengths[idx]
+                except (ValueError, IndexError):
+                    pass
+            if w >= 0.6:
+                high_features.append(feature_name)
+            elif w < 0.4:
+                low_features.append(feature_name)
+
+        if high_features:
+            fusion_directives.append(f"Emphasize strong presence of: {', '.join(high_features)}.")
+        if low_features:
+            fusion_directives.append(f"Keep subtle and delicate: {', '.join(low_features)}.")
 
     # Artisan custom note
     if note and note.strip():
