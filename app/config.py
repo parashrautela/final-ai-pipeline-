@@ -56,13 +56,13 @@ VARIANT_PROMPTS = [
 
 class Settings(BaseSettings):
     # Supabase
-    SUPABASE_URL: str
-    SUPABASE_SERVICE_ROLE_KEY: str  # service role bypasses RLS, keep this secret
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""  # service role bypasses RLS, keep this secret
 
     # AI Models
-    REVE_API_KEY: str
+    REVE_API_KEY: str = ""
     REVE_PROMPT: str = ""
-    NANOBANA_API_KEY: str
+    NANOBANA_API_KEY: str = ""
     NANOBANA_PROMPT: str = ""  # only used in single-variant mode; ignored in 4-variant flow
 
     # Variant prompts (can be overridden via env vars)
@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     # Set TEST_MODE=true in .env to generate only 1 variant (saves API credits during testing)
     TEST_MODE: bool = False
 
+    # Observability
+    # Sentry DSN for error reporting. Left blank by default so the app still
+    # starts fine locally / in CI without it — sentry_sdk.init() is only
+    # called (in app/main.py) when this is actually set. Set the SENTRY_DSN
+    # env var in the deployment environment to enable error tracking.
+    SENTRY_DSN: str = ""
+
     # Worker
     POLL_INTERVAL_SECONDS: int = 2
     MAX_CONCURRENT_JOBS: int = 5
@@ -103,6 +110,13 @@ class Settings(BaseSettings):
     PROCESSED_STORAGE_FOLDER: str = "products/processed"
     ALLOWED_MIME_TYPES: list[str] = ["image/jpeg", "image/png", "image/webp"]
     MAX_FILE_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
+
+    # Chamak & OpenAI
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o"
+    CHAMAK_TABLE_NAME: str = "chamak_generations"
+    CHAMAK_OUTPUT_BUCKET: str = "chamak-outputs"
+    CHAMAK_PROMPT_VERSION: str = "v1.0-chamak"
 
     class Config:
         env_file = ".env"

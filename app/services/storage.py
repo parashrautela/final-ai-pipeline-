@@ -9,16 +9,85 @@ from app.db.repository import get_supabase
 from app.logging import logger
 
 
-def _ensure_bucket(bucket_name: str) -> None:
-    """Create bucket as public if it doesn't exist."""
+def _ensure_bucket(bucket_name: str, *, public: bool = True) -> None:
+    """Create bucket if it doesn't exist."""
     try:
         sb = get_supabase()
         existing = [b.name for b in sb.storage.list_buckets()]
         if bucket_name not in existing:
-            sb.storage.create_bucket(bucket_name, options={"public": True})
-            logger.info(f"Created storage bucket '{bucket_name}'")
+            sb.storage.create_bucket(bucket_name, options={"public": public})
+            logger.info(f"Created storage bucket '{bucket_name}' (public={public})")
     except Exception as exc:
         logger.warning(f"Could not verify/create bucket '{bucket_name}': {exc}")
+
+
+def upload_chamak_output(file_content: bytes, wholesaler_id: str, generation_id: str) -> str:
+    """Upload generated Chamak output image to private bucket chamak-outputs.
+
+    Returns the relative path inside the bucket: '{wholesaler_id}/{generation_id}.png'
+    """
+    bucket = settings.CHAMAK_OUTPUT_BUCKET
+    path = f"{wholesaler_id}/{generation_id}.png"
+    try:
+        _ensure_bucket(bucket, public=False)
+        sb = get_supabase()
+        sb.storage.from_(bucket).upload(
+            path=path,
+            file=file_content,
+            file_options={"content-type": "image/png", "upsert": "true"},
+        )
+        logger.info(
+            f"Uploaded chamak output to private bucket: {bucket}/{path}",
+            extra={"wholesaler_id": wholesaler_id, "generation_id": generation_id},
+        )
+        return path
+    except Exception as exc:
+        logger.error(
+            f"Failed to upload chamak output {bucket}/{path}: {exc}",
+            extra={"wholesaler_id": wholesaler_id, "generation_id": generation_id},
+            exc_info=exc,
+        )
+        raise
+
+
+async def fetch_image_bytes_and_content_type(image_url_or_path: str) -> tuple[bytes, str]:
+    """Resolve an image URL or Supabase storage path to (bytes, mime_type)."""
+    # 1. If it's a standard HTTP/HTTPS URL
+    if image_url_or_path.startswith("http://") or image_url_or_path.startswith("https://"):
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(image_url_or_path, timeout=30.0, follow_redirects=True)
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                if not content_type.startswith("image/"):
+                    content_type = "image/jpeg"
+                return resp.content, content_type
+        except Exception as http_exc:
+            logger.warning(f"Direct HTTP fetch failed for {image_url_or_path}, checking storage: {http_exc}")
+            # If HTTP fetch fails, attempt to extract bucket and path if it's a Supabase URL
+            bucket, path = _storage_path_from_image_url(image_url_or_path)
+            data = download_from_storage(bucket, path)
+            ext = path.split(".")[-1].lower() if "." in path else "jpg"
+            mime = "image/png" if ext == "png" else ("image/webp" if ext == "webp" else "image/jpeg")
+            return data, mime
+
+    # 2. If it's a storage path like 'bucket/path' or 'path'
+    if "/" in image_url_or_path:
+        parts = image_url_or_path.split("/", 1)
+        bucket = parts[0]
+        path = parts[1]
+        try:
+            data = download_from_storage(bucket, path)
+            ext = path.split(".")[-1].lower() if "." in path else "jpg"
+            mime = "image/png" if ext == "png" else ("image/webp" if ext == "webp" else "image/jpeg")
+            return data, mime
+        except Exception:
+            pass
+
+    # Fallback to RAW_BUCKET_NAME
+    data = download_from_storage(settings.RAW_BUCKET_NAME, image_url_or_path)
+    return data, "image/jpeg"
+
         
 def _storage_path_from_image_url(image_url: str) -> tuple[str, str]:
     """Parse bucket and path from a Supabase storage URL or relative path."""

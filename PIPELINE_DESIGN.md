@@ -11,7 +11,7 @@ This document covers the complete design of the pipeline in two parts:
 
 ### What this pipeline does
 
-A user uploads a raw jewellery photo (e.g. a ring on a white cloth). The pipeline automatically:
+A user uploads a raw hii jewellery photo (e.g. a ring on a white cloth). The pipeline automatically:
 
 1. Strips the background from the photo using **Reve AI**.
 2. Generates **4 professionally styled product shots** from the cleaned image using **Nanobana AI** — each on a different backdrop (stone, velvet, marble, charcoal).

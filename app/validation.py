@@ -243,6 +243,25 @@ class ProductId(BaseModel):
         return validate_uuid(v, "product_id")
 
 
+class ChamakGenerationRequest(BaseModel):
+    """Validated Chamak generation request (UUID format)."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    generation_id: Annotated[
+        str,
+        Field(
+            description="Chamak generation UUID",
+            pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+        ),
+    ]
+
+    @field_validator("generation_id", mode="before")
+    @classmethod
+    def validate_gen_id(cls, v: str) -> str:
+        return validate_uuid(v, "generation_id")
+
+
 def validate_product_input(
     title: Optional[str] = None,
     jewellery_type: Optional[str] = None,

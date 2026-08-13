@@ -1,29 +1,67 @@
 import asyncio
+
 from contextlib import asynccontextmanager
 
+# pyrefly: ignore [missing-import]
+import sentry_sdk
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
+from sentry_sdk.integrations.fastapi import FastApiIntegration
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.config import settings
-from app.db.repository import create_product, fetch_job_by_id, update_product_image_url
+from app.db.repository import (
+    create_product,
+    fetch_chamak_generation,
+    fetch_job_by_id,
+    update_chamak_generation,
+    update_job_status,
+    update_product_image_url,
+)
 from app.logging import logger
+from app.services.chamak import (
+    run_stage1_vision_analysis,
+    run_stage4_generation,
+)
 from app.services.pipeline import process_product_image
 from app.services.storage import upload_raw_image
 from app.validation import (
+    ChamakGenerationRequest,
     ValidationError,
     validate_product_id,
     validate_product_input,
+    validate_uuid,
 )
 from app.worker import worker_loop
 
 # Rate limiter keyed on client IP. Each route sets its own cap;
 # the default here is a fallback for any route we forget to decorate.
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
+# Error tracking: unhandled exceptions (Reve/Nanobana API errors, storage
+# failures, pipeline exceptions, etc.) are reported to Sentry so they're
+# visible outside container stdout logs. Only initialized when a DSN is
+# actually configured — this keeps local/dev runs working without Sentry.
+if settings.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        integrations=[FastApiIntegration()],
+        traces_sample_rate=1.0,
+        # Add data like request headers and IP for users,
+        # see https://docs.sentry.io/platforms/python/data-management/data-collected/ for more info
+        send_default_pii=True,
+    )
+    logger.info("Sentry error tracking initialized.")
+else:
+    logger.warning(
+        "SENTRY_DSN is not set — unhandled exceptions will NOT be reported to "
+        "Sentry and will only be visible in container stdout logs. Set the "
+        "SENTRY_DSN environment variable to enable error tracking."
+    )
 
 
 @asynccontextmanager
@@ -230,3 +268,92 @@ async def _run_product_pipeline(product: dict) -> None:
         logger.error(
             "Product pipeline failed", extra={"product_id": product_id}, exc_info=exc
         )
+        # Without this, a failed generation looks identical to a still-processing
+        # job forever — GET /product/{id} would keep reporting a pending/blank
+        # state to the polling frontend instead of the real failure.
+        try:
+            await update_job_status(product_id, status="error", error_message=str(exc))
+        except Exception:
+            logger.error(
+                "Failed to persist pipeline failure status",
+                extra={"product_id": product_id},
+                exc_info=True,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Chamak AI Jewelry Fusion Endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/chamak/analyze", status_code=202)
+@limiter.limit("10/minute")
+async def chamak_analyze(
+    request: Request,
+    body: ChamakGenerationRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Trigger Stage 1 vision analysis for a Chamak jewelry fusion job."""
+    generation_id = body.generation_id
+    row = await fetch_chamak_generation(generation_id)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chamak generation '{generation_id}' not found",
+        )
+
+    await update_chamak_generation(generation_id, {"status": "analyzing"})
+    background_tasks.add_task(run_stage1_vision_analysis, generation_id)
+    logger.info("Chamak vision analysis enqueued", extra={"generation_id": generation_id})
+
+    return {
+        "message": "Chamak vision analysis queued.",
+        "generation_id": generation_id,
+        "status": "analyzing",
+    }
+
+
+@app.post("/api/chamak/generate", status_code=202)
+@limiter.limit("10/minute")
+async def chamak_generate(
+    request: Request,
+    body: ChamakGenerationRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Trigger Stage 3 prompt compilation & Stage 4 image generation."""
+    generation_id = body.generation_id
+    row = await fetch_chamak_generation(generation_id)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chamak generation '{generation_id}' not found",
+        )
+
+    await update_chamak_generation(generation_id, {"status": "generating"})
+    background_tasks.add_task(run_stage4_generation, generation_id)
+    logger.info("Chamak image generation enqueued", extra={"generation_id": generation_id})
+
+    return {
+        "message": "Chamak image generation queued.",
+        "generation_id": generation_id,
+        "status": "generating",
+    }
+
+
+@app.get("/api/chamak/{generation_id}")
+@limiter.limit("60/minute")
+async def get_chamak_status(request: Request, generation_id: str):
+    """Fetch the current status and output of a Chamak generation job."""
+    try:
+        validated_id = validate_uuid(generation_id, "generation_id")
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    row = await fetch_chamak_generation(validated_id)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chamak generation '{generation_id}' not found",
+        )
+    return row
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+# pyrefly: ignore [missing-import]
 from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
@@ -208,3 +209,56 @@ async def update_product_generated_images(
     except Exception as exc:
         logger.error("update_product_generated_images failed", extra={"product_id": product_id}, exc_info=exc)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Chamak Generations repository
+# ---------------------------------------------------------------------------
+
+
+async def fetch_chamak_generation(generation_id: str) -> Optional[dict]:
+    """Return a chamak_generations row by primary key (id), or None if not found."""
+    try:
+        resp = (
+            get_supabase()
+            .table(settings.CHAMAK_TABLE_NAME)
+            .select("*")
+            .eq("id", generation_id)
+            .limit(1)
+            .execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception as exc:
+        logger.error(
+            "fetch_chamak_generation failed",
+            extra={"generation_id": generation_id},
+            exc_info=exc,
+        )
+        return None
+
+
+async def update_chamak_generation(generation_id: str, updates: dict) -> Optional[dict]:
+    """Apply updates to a chamak_generations row and return updated record."""
+    try:
+        resp = (
+            get_supabase()
+            .table(settings.CHAMAK_TABLE_NAME)
+            .update(updates)
+            .eq("id", generation_id)
+            .execute()
+        )
+        if resp.data:
+            logger.info(
+                "Updated chamak_generation",
+                extra={"generation_id": generation_id, "updated_fields": list(updates.keys())},
+            )
+            return resp.data[0]
+        return None
+    except Exception as exc:
+        logger.error(
+            "update_chamak_generation failed",
+            extra={"generation_id": generation_id, "updates": updates},
+            exc_info=exc,
+        )
+        raise
+
