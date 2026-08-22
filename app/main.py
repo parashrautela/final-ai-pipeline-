@@ -32,6 +32,7 @@ from app.services.storage import upload_raw_image
 from app.validation import (
     ChamakGenerationRequest,
     ValidationError,
+    validate_jewellery_type_dynamic,
     validate_product_id,
     validate_product_input,
     validate_uuid,
@@ -141,11 +142,11 @@ async def process_upload(
     jewellery_type: str = "",
 ):
     """Upload an image and start the AI pipeline."""
-    # --- Input validation (prevents injection attacks) ---
+    # --- Input validation (prevents injection attacks & validates category) ---
     try:
         validated = validate_product_input(title=title, jewellery_type=jewellery_type)
         title = validated.title
-        jewellery_type = validated.jewellery_type
+        jewellery_type = await validate_jewellery_type_dynamic(validated.jewellery_type)
     except (ValidationError, PydanticValidationError) as exc:
         logger.warning(f"Input validation failed: {exc}")
         raise HTTPException(status_code=422, detail=str(exc))

@@ -262,3 +262,77 @@ async def update_chamak_generation(generation_id: str, updates: dict) -> Optiona
         )
         raise
 
+
+# ---------------------------------------------------------------------------
+# Prompt Modules & AI Generation Logs repository
+# ---------------------------------------------------------------------------
+
+
+async def fetch_active_prompt_modules() -> list[dict]:
+    """Fetch all currently active prompt modules (base and categories)."""
+    try:
+        resp = (
+            get_supabase()
+            .table("prompt_modules")
+            .select("id, module_type, jewellery_type, prompt_text, version, is_active")
+            .eq("is_active", True)
+            .execute()
+        )
+        return resp.data or []
+    except Exception as exc:
+        logger.error("fetch_active_prompt_modules failed", exc_info=exc)
+        return []
+
+
+async def log_ai_generation_start(
+    product_id: str,
+    jewellery_type: str,
+    composed_prompt: str,
+    base_module_version: Optional[int] = None,
+    category_module_version: Optional[int] = None,
+    wholesaler_id: Optional[str] = None,
+) -> Optional[str]:
+    """Insert a new record in ai_generation_logs and return the generated log ID."""
+    payload: dict = {
+        "product_id": product_id,
+        "jewellery_type": jewellery_type,
+        "composed_prompt": composed_prompt,
+        "base_module_version": base_module_version,
+        "category_module_version": category_module_version,
+        "status": "started",
+        "triggered_at": datetime.now(timezone.utc).isoformat(),
+        "trigger_source": "api",
+    }
+    if wholesaler_id:
+        payload["wholesaler_id"] = wholesaler_id
+
+    try:
+        resp = get_supabase().table("ai_generation_logs").insert(payload).execute()
+        if resp.data:
+            log_id = resp.data[0]["id"]
+            logger.info("AI generation logged (started)", extra={"log_id": log_id, "product_id": product_id})
+            return log_id
+        return None
+    except Exception as exc:
+        logger.error("log_ai_generation_start failed", extra={"product_id": product_id}, exc_info=exc)
+        return None
+
+
+async def log_ai_generation_complete(
+    log_id: str,
+    status: str = "success",
+) -> None:
+    """Update ai_generation_logs with completion timestamp and final status."""
+    if not log_id:
+        return
+    payload = {
+        "status": status,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        get_supabase().table("ai_generation_logs").update(payload).eq("id", log_id).execute()
+        logger.info(f"AI generation log updated → {status}", extra={"log_id": log_id, "status": status})
+    except Exception as exc:
+        logger.error("log_ai_generation_complete failed", extra={"log_id": log_id, "status": status}, exc_info=exc)
+
+

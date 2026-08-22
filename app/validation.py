@@ -193,9 +193,10 @@ class ProductCreate(BaseModel):
     jewellery_type: Annotated[
         str,
         Field(
-            default="",
+            ...,
+            min_length=1,
             max_length=MAX_JEWELLERY_TYPE_LENGTH,
-            description="Type of jewellery (ring, necklace, etc.)",
+            description="Type of jewellery (e.g. jhumka, mangalsutra, necklace, ring, bangle, other)",
         ),
     ]
 
@@ -213,15 +214,16 @@ class ProductCreate(BaseModel):
 
     @field_validator("jewellery_type", mode="before")
     @classmethod
-    def validate_jewellery_type(cls, v: Optional[str]) -> str:
-        if v is None:
-            return ""
-        return sanitize_text(
-            v,
+    def validate_jewellery_type_field(cls, v: Optional[str]) -> str:
+        if not v or not str(v).strip():
+            raise ValidationError("jewellery_type is required")
+        sanitized = sanitize_text(
+            str(v),
             max_length=MAX_JEWELLERY_TYPE_LENGTH,
             field_name="jewellery_type",
-            allow_empty=True,
+            allow_empty=False,
         )
+        return sanitized.lower()
 
 
 class ProductId(BaseModel):
@@ -262,6 +264,34 @@ class ChamakGenerationRequest(BaseModel):
         return validate_uuid(v, "generation_id")
 
 
+async def validate_jewellery_type_dynamic(jewellery_type: str) -> str:
+    """
+    Validate jewellery_type against active prompt_modules in database/cache.
+
+    This ensures categories can be added in DB without redeploying code.
+    """
+    from app.services.prompt_composer import prompt_composer
+
+    if not jewellery_type or not str(jewellery_type).strip():
+        raise ValidationError("jewellery_type is required")
+
+    sanitized = sanitize_text(
+        str(jewellery_type),
+        max_length=MAX_JEWELLERY_TYPE_LENGTH,
+        field_name="jewellery_type",
+        allow_empty=False,
+    ).lower()
+
+    valid_types = await prompt_composer.get_valid_jewellery_types()
+    if sanitized not in valid_types:
+        formatted_list = ", ".join(sorted(valid_types))
+        raise ValidationError(
+            f"Invalid jewellery_type '{sanitized}'. Must be one of: {formatted_list}"
+        )
+
+    return sanitized
+
+
 def validate_product_input(
     title: Optional[str] = None,
     jewellery_type: Optional[str] = None,
@@ -279,9 +309,12 @@ def validate_product_input(
     Raises:
         ValidationError: If validation fails
     """
+    if not jewellery_type or not str(jewellery_type).strip():
+        raise ValidationError("jewellery_type is required")
+
     return ProductCreate(
         title=title if title else "Untitled",
-        jewellery_type=jewellery_type if jewellery_type else "",
+        jewellery_type=jewellery_type,
     )
 
 
