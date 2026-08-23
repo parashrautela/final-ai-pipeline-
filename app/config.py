@@ -87,6 +87,21 @@ class Settings(BaseSettings):
     # Set TEST_MODE=true in .env to generate only 1 variant (saves API credits during testing)
     TEST_MODE: bool = False
 
+    # Number of Nanobana variants to generate per product, one per entry in
+    # VARIANT_SCENE_SETTINGS (pipeline.py). Named to match the
+    # IMAGE_GENERATION_COUNT env var already set on Railway — that var existed
+    # before any code read it, so it silently did nothing; this wires it up.
+    # Only 4 scenes are defined today, so this is clamped to that range
+    # regardless of what the env var says — see the variant_count property
+    # below. TEST_MODE still forces this to 1.
+    IMAGE_GENERATION_COUNT: int = 4
+
+    @property
+    def variant_count(self) -> int:
+        if self.TEST_MODE:
+            return 1
+        return max(1, min(self.IMAGE_GENERATION_COUNT, 4))
+
     # Observability
     # Sentry DSN for error reporting. Left blank by default so the app still
     # starts fine locally / in CI without it — sentry_sdk.init() is only

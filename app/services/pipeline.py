@@ -96,7 +96,7 @@ async def process_product_image(product: dict) -> list[str]:
     Steps:
     1. Get raw image URL from product
     2. Compose Base + Category prompts
-    3. Generate 4 variants concurrently via Nanobana
+    3. Generate settings.variant_count variants concurrently via Nanobana
     4. Upload each variant to Supabase Storage
     5. Persist URLs to database
 
@@ -109,9 +109,10 @@ async def process_product_image(product: dict) -> list[str]:
 
     start = time.time()
 
-    variant_count = 1 if settings.TEST_MODE else 4
+    variant_count = settings.variant_count
     logger.info(
-        f"Pipeline started ({'TEST — 1 variant' if settings.TEST_MODE else '4-variant mode'})",
+        f"Pipeline started ({variant_count}-variant mode"
+        f"{' — TEST_MODE' if settings.TEST_MODE else ''})",
         extra={"product_id": product_id, "raw_image_url": raw_image_url},
     )
 

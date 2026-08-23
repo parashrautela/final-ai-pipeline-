@@ -128,8 +128,11 @@ class ReveClient:
 class NanobanaClient:
     """Client for Nanobana scene enhancement API."""
 
-    # Using generate-pro endpoint for native 4K image-to-image editing
-    # Pricing: Nano Banana Pro = ~9-12 credits/image (native 4K output)
+    # Using generate-pro endpoint for image-to-image editing at 2K.
+    # 2K is the deliberate choice here, not 4K: 4K carries a real credit
+    # premium over 2K on this API for the same image, and 2K is judged the
+    # better tradeoff against IMAGE_GENERATION_COUNT variants per product —
+    # more images at 2K beats fewer at 4K for the same spend.
     _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
     _STATUS_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
 
@@ -160,7 +163,7 @@ class NanobanaClient:
     async def enhance_image(
         self, image_url: str, *, prompt: str | None = None
     ) -> bytes:
-        """Send image URL to Nanobana Pro, return 4K enhanced image bytes."""
+        """Send image URL to Nanobana Pro, return 2K enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
 
         # Keep the head and the tail so the trailing SCENE directive survives —
@@ -182,12 +185,14 @@ class NanobanaClient:
                 + active_prompt[-self._PROMPT_TAIL_CHARS :]
             )
 
-        # Using generate-pro endpoint with resolution "4K" for native 4K output
+        # generate-pro requires "resolution" (not "image_size" — that belongs
+        # to the plain /generate endpoint and 422s here). "2K" chosen for
+        # cost — see the class-level comment.
         payload = {
             "prompt": active_prompt,
             "type": "IMAGETOIAMGE",
             "imageUrls": [image_url],
-            "resolution": "4K",
+            "resolution": "2K",
             "callBackUrl": "https://api.nanobananaapi.ai/callback",  # Required by API
         }
         try:
