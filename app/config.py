@@ -1,4 +1,8 @@
+import logging
+
 from pydantic_settings import BaseSettings
+
+_log = logging.getLogger(__name__)
 
 # jewellery design if the instruction isn't specific enough.
 # Use {item_description} as a placeholder — it is replaced at runtime with the
@@ -101,6 +105,22 @@ class Settings(BaseSettings):
         if self.TEST_MODE:
             return 1
         return max(1, min(self.IMAGE_GENERATION_COUNT, 4))
+
+    # Nanobana generate-pro "resolution" value. Named to match the
+    # NANOBANA_IMAGE_SIZE env var already set on Railway (to "2k") — that var
+    # existed before any code read it either; ai.py had "2K" hardcoded.
+    NANOBANA_IMAGE_SIZE: str = "2K"
+
+    @property
+    def nanobana_resolution(self) -> str:
+        value = (self.NANOBANA_IMAGE_SIZE or "").strip().upper()
+        if value not in ("1K", "2K", "4K"):
+            _log.warning(
+                f"NANOBANA_IMAGE_SIZE={self.NANOBANA_IMAGE_SIZE!r} is not one of "
+                f"1K/2K/4K — falling back to 2K"
+            )
+            return "2K"
+        return value
 
     # Observability
     # Sentry DSN for error reporting. Left blank by default so the app still

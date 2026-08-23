@@ -186,13 +186,15 @@ class NanobanaClient:
             )
 
         # generate-pro requires "resolution" (not "image_size" — that belongs
-        # to the plain /generate endpoint and 422s here). "2K" chosen for
-        # cost — see the class-level comment.
+        # to the plain /generate endpoint and 422s here). Value comes from
+        # settings.nanobana_resolution (NANOBANA_IMAGE_SIZE on Railway) rather
+        # than a literal — see the class-level comment for why 2K is the
+        # default.
         payload = {
             "prompt": active_prompt,
             "type": "IMAGETOIAMGE",
             "imageUrls": [image_url],
-            "resolution": "2K",
+            "resolution": settings.nanobana_resolution,
             "callBackUrl": "https://api.nanobananaapi.ai/callback",  # Required by API
         }
         try:
