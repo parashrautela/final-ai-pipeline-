@@ -128,10 +128,9 @@ class ReveClient:
 class NanobanaClient:
     """Client for Nanobana scene enhancement API."""
 
-    # Using the standard generate endpoint for image-to-image editing
-    # When imageUrls is provided, API automatically treats it as image-to-image
-    # Pricing: Nano Banana Edit (image-to-image) = $0.02/image = ~2 credits
-    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
+    # Using generate-pro endpoint for native 4K image-to-image editing
+    # Pricing: Nano Banana Pro = ~9-12 credits/image (native 4K output)
+    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
     _STATUS_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
 
     def __init__(self) -> None:
@@ -143,14 +142,14 @@ class NanobanaClient:
     async def enhance_image(
         self, image_url: str, *, prompt: str | None = None
     ) -> bytes:
-        """Send background-removed image URL to Nanobana, return enhanced image bytes."""
+        """Send image URL to Nanobana Pro, return 4K enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
-        # According to official docs: https://docs.nanobananaapi.ai/nanobanana-api/generate-or-edit-image
-        # type must be "IMAGETOIAMGE" (note the typo in API - it's IAMGE not IMAGE!)
+        # Using generate-pro endpoint with image_size "4K" for native 4K resolution output
         payload = {
             "prompt": active_prompt,
             "type": "IMAGETOIAMGE",
             "imageUrls": [image_url],
+            "image_size": "4K",
             "callBackUrl": "https://api.nanobananaapi.ai/callback",  # Required by API
         }
         try:
