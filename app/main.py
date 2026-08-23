@@ -1,6 +1,8 @@
-import asyncio
+from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from typing import Optional
 
 # pyrefly: ignore [missing-import]
 import sentry_sdk
