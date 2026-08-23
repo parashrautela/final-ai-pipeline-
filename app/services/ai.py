@@ -139,11 +139,23 @@ class NanobanaClient:
             "Content-Type": "application/json",
         }
 
+    # Hard cap — Nano Banana's tokenizer crashes on prompts > ~2000 chars.
+    # Keep well under the limit for reliable generation.
+    _MAX_PROMPT_CHARS = 1500
+
     async def enhance_image(
         self, image_url: str, *, prompt: str | None = None
     ) -> bytes:
         """Send image URL to Nanobana Pro, return 4K enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
+
+        # Safety: truncate oversized prompts to prevent Nano Banana 500 errors
+        if len(active_prompt) > self._MAX_PROMPT_CHARS:
+            logger.warning(
+                f"Prompt truncated from {len(active_prompt)} to {self._MAX_PROMPT_CHARS} chars"
+            )
+            active_prompt = active_prompt[: self._MAX_PROMPT_CHARS]
+
         # Using generate-pro endpoint with image_size "4K" for native 4K resolution output
         payload = {
             "prompt": active_prompt,
