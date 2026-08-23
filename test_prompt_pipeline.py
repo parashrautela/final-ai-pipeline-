@@ -233,5 +233,53 @@ class TestPipelinePromptIntegration(unittest.IsolatedAsyncioTestCase):
             mock_log_complete.assert_called_once_with("log-id-test", status="success")
 
 
+class TestProcessUploadEndpoint(unittest.IsolatedAsyncioTestCase):
+    @patch("app.main.upload_raw_image", return_value="https://storage.com/raw.jpg")
+    @patch("app.main.update_product_image_url", new_callable=AsyncMock)
+    @patch("app.main.create_product", new_callable=AsyncMock)
+    @patch("app.main._run_product_pipeline", new_callable=AsyncMock)
+    async def test_process_upload_multipart_form_data(
+        self,
+        mock_run_pipeline,
+        mock_create_product,
+        mock_update_image_url,
+        mock_upload_raw,
+    ):
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        fake_product_id = str(uuid4())
+        fake_wholesaler_id = str(uuid4())
+        mock_create_product.return_value = {
+            "id": fake_product_id,
+            "title": "Gold Necklace",
+            "jewellery_type": "necklace",
+            "wholesaler_id": fake_wholesaler_id,
+        }
+
+        client = TestClient(app)
+
+        # Send multipart/form-data upload with file, title, jewellery_type, wholesaler_id
+        files = {"file": ("test.jpg", b"fake_image_binary_data", "image/jpeg")}
+        data = {
+            "title": "Gold Necklace",
+            "jewellery_type": "necklace",
+            "wholesaler_id": fake_wholesaler_id,
+        }
+
+        response = client.post("/process", data=data, files=files)
+        self.assertEqual(response.status_code, 202)
+        resp_json = response.json()
+        self.assertEqual(resp_json["product_id"], fake_product_id)
+
+        # Verify create_product was called with parsed form fields
+        mock_create_product.assert_called_once_with(
+            title="Gold Necklace",
+            jewellery_type="necklace",
+            wholesaler_id=fake_wholesaler_id,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
+

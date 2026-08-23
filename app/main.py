@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 # pyrefly: ignore [missing-import]
 import sentry_sdk
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
@@ -138,13 +138,32 @@ async def process_upload(
     file: UploadFile = File(
         ..., description="Raw jewellery image (JPEG/PNG/WebP, max 10MB)"
     ),
-    title: str = "Untitled",
-    jewellery_type: str = "",
+    title: str = Form("Untitled"),
+    jewellery_type: Optional[str] = Form(None),
+    jewelry_type: Optional[str] = Form(None),
+    wholesaler_id: Optional[str] = Form(None),
 ):
     """Upload an image and start the AI pipeline."""
+    # Direct fallback in case fields are passed with alternative content headers
+    form_data = None
+    try:
+        form_data = await request.form()
+    except Exception:
+        pass
+
+    if form_data:
+        if not title or title == "Untitled":
+            title = form_data.get("title", title)
+        if not jewellery_type:
+            jewellery_type = form_data.get("jewellery_type") or form_data.get("jewelry_type")
+        if not wholesaler_id:
+            wholesaler_id = form_data.get("wholesaler_id")
+
+    raw_type = (jewellery_type or jewelry_type or "").strip()
+
     # --- Input validation (prevents injection attacks & validates category) ---
     try:
-        validated = validate_product_input(title=title, jewellery_type=jewellery_type)
+        validated = validate_product_input(title=title, jewellery_type=raw_type)
         title = validated.title
         jewellery_type = await validate_jewellery_type_dynamic(validated.jewellery_type)
     except (ValidationError, PydanticValidationError) as exc:
@@ -164,7 +183,11 @@ async def process_upload(
             status_code=413, detail=f"File too large ({len(raw_bytes):,} bytes)"
         )
 
-    product = await create_product(title=title, jewellery_type=jewellery_type)
+    product = await create_product(
+        title=title,
+        jewellery_type=jewellery_type,
+        wholesaler_id=wholesaler_id,
+    )
     product_id = product["id"]
 
    

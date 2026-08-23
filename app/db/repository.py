@@ -41,13 +41,20 @@ def get_supabase() -> Client:
         raise
 
 
-async def create_product(title: str = "", jewellery_type: str = "") -> dict:
+async def create_product(
+    title: str = "",
+    jewellery_type: str = "",
+    wholesaler_id: Optional[str] = None,
+) -> dict:
     """Insert a new product row and return it."""
-    payload = {
+    payload: dict = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "title": title or "",
         "jewellery_type": jewellery_type or None,
     }
+    if wholesaler_id:
+        payload["wholesaler_id"] = wholesaler_id
+
     try:
         resp = get_supabase().table(_TABLE).insert(payload).execute()
         product = resp.data[0]
