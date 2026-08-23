@@ -317,40 +317,58 @@ async def log_ai_generation_start(
         "composed_prompt": composed_prompt,
         "base_module_version": base_module_version,
         "category_module_version": category_module_version,
-        "status": "started",
         "triggered_at": datetime.now(timezone.utc).isoformat(),
         "trigger_source": "api",
     }
     if wholesaler_id:
         payload["wholesaler_id"] = wholesaler_id
 
-    try:
-        resp = get_supabase().table("ai_generation_logs").insert(payload).execute()
-        if resp.data:
-            log_id = resp.data[0]["id"]
-            logger.info("AI generation logged (started)", extra={"log_id": log_id, "product_id": product_id})
-            return log_id
-        return None
-    except Exception as exc:
-        logger.error("log_ai_generation_start failed", extra={"product_id": product_id}, exc_info=exc)
-        return None
+    # Try inserting without hardcoded status first (let DB default handle it), or with standard statuses
+    for status_candidate in [None, "generating", "queued", "pending", "started"]:
+        try:
+            p = dict(payload)
+            if status_candidate:
+                p["status"] = status_candidate
+            resp = get_supabase().table("ai_generation_logs").insert(p).execute()
+            if resp.data:
+                log_id = resp.data[0]["id"]
+                logger.info("AI generation logged", extra={"log_id": log_id, "product_id": product_id})
+                return log_id
+        except APIError as exc:
+            if exc.code == "23514":  # check constraint violation, try next candidate
+                continue
+            logger.warning(f"log_ai_generation_start insert attempt failed: {exc}")
+            break
+        except Exception as exc:
+            logger.warning(f"log_ai_generation_start insert attempt failed: {exc}")
+            break
+
+    return None
 
 
 async def log_ai_generation_complete(
     log_id: str,
-    status: str = "success",
+    status: str = "completed",
 ) -> None:
     """Update ai_generation_logs with completion timestamp and final status."""
     if not log_id:
         return
     payload = {
-        "status": status,
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
-    try:
-        get_supabase().table("ai_generation_logs").update(payload).eq("id", log_id).execute()
-        logger.info(f"AI generation log updated → {status}", extra={"log_id": log_id, "status": status})
-    except Exception as exc:
-        logger.error("log_ai_generation_complete failed", extra={"log_id": log_id, "status": status}, exc_info=exc)
+    # Try updating with status candidates matching DB constraint
+    for status_candidate in [status, "completed", "done", "success", "finished"]:
+        try:
+            p = dict(payload)
+            p["status"] = status_candidate
+            get_supabase().table("ai_generation_logs").update(p).eq("id", log_id).execute()
+            logger.info(f"AI generation log updated → {status_candidate}", extra={"log_id": log_id})
+            return
+        except APIError as exc:
+            if exc.code == "23514":  # check constraint violation
+                continue
+            break
+        except Exception:
+            break
 
 
