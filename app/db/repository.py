@@ -177,9 +177,20 @@ async def update_job_status(
     try:
         get_supabase().table(_TABLE).update(payload).eq("id", job_id).execute()
         logger.info(f"Job status → {status}", extra={"job_id": job_id, "status": status})
+    except APIError as exc:
+        # If optional columns (like error_message or processing_time_ms) don't exist in the table,
+        # retry updating just status
+        if exc.code == "PGRST204":
+            try:
+                minimal_payload = {"status": status}
+                get_supabase().table(_TABLE).update(minimal_payload).eq("id", job_id).execute()
+                logger.info(f"Job status (minimal) → {status}", extra={"job_id": job_id})
+                return
+            except Exception:
+                pass
+        logger.error("update_job_status failed", extra={"job_id": job_id, "status": status}, exc_info=exc)
     except Exception as exc:
         logger.error("update_job_status failed", extra={"job_id": job_id, "status": status}, exc_info=exc)
-        raise
 
 
 async def update_product_image_url(product_id: str, processed_url: str) -> None:
