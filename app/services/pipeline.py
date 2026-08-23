@@ -12,12 +12,10 @@ from app.db.repository import (
     update_product_generated_images,
 )
 from app.logging import logger
-from app.services.ai import nanobana_client, reve_client
+from app.services.ai import nanobana_client
 from app.services.prompt_composer import prompt_composer
 from app.services.storage import (
     download_image,
-    resolve_product_image,
-    upload_file_to_storage,
     upload_processed_image,
     upload_processed_image_variant,
 )
@@ -45,7 +43,7 @@ VARIANT_SCENE_SETTINGS = [
 
 
 async def _generate_variant(
-    reve_url: str,
+    input_image_url: str,
     product_id: str,
     variant_index: int,
     prompt: str,
@@ -70,7 +68,7 @@ async def _generate_variant(
             extra={"product_id": product_id},
         )
 
-        image_bytes = await nanobana_client.enhance_image(reve_url, prompt=prompt)
+        image_bytes = await nanobana_client.enhance_image(input_image_url, prompt=prompt)
 
         # Upload runs in a thread because the Supabase storage SDK is synchronous.
         public_url = await asyncio.to_thread(
@@ -93,46 +91,31 @@ async def _generate_variant(
 
 async def process_product_image(product: dict) -> list[str]:
     """
-    Full AI pipeline for a product — produces 4 concurrent variants using category prompt composer.
+    Full AI pipeline for a product — directly sends raw image URL to Nanobana with composed category prompts.
 
     Steps:
-    1. Download raw image from storage
-    2. Reve background removal
-    3. Upload Reve output to temp path
-    4. Compose Base + Category prompts and generate variants concurrently via Nanobana
-    5. Upload each variant
-    6. Persist URLs to database
+    1. Get raw image URL from product
+    2. Compose Base + Category prompts
+    3. Generate 4 variants concurrently via Nanobana
+    4. Upload each variant to Supabase Storage
+    5. Persist URLs to database
 
     Returns list of successful variant URLs. Raises if all fail.
     """
     product_id = product["id"]
+    raw_image_url = product.get("image_url")
+    if not raw_image_url:
+        raise ValueError(f"Product {product_id} has no image_url")
+
     start = time.time()
 
     variant_count = 1 if settings.TEST_MODE else 4
     logger.info(
         f"Pipeline started ({'TEST — 1 variant' if settings.TEST_MODE else '4-variant mode'})",
-        extra={"product_id": product_id},
+        extra={"product_id": product_id, "raw_image_url": raw_image_url},
     )
 
-    # Step 1: Download raw image
-    logger.info("Step 1/4 — downloading raw image", extra={"product_id": product_id})
-    image_bytes = resolve_product_image(product)
-
-    # Step 2: Background removal
-    logger.info("Step 2/4 — removing background (Reve)", extra={"product_id": product_id})
-    reve_output = await reve_client.remove_background(image_bytes)
-
-    # Step 3: Upload Reve result
-    logger.info("Step 3/4 — uploading Reve output", extra={"product_id": product_id})
-    reve_url = await asyncio.to_thread(
-        upload_file_to_storage,
-        reve_output,
-        settings.PROCESSED_BUCKET_NAME,
-        f"products/temp/reve_{product_id}.png",
-    )
-
-    # Step 4: Compose category-based prompts and generate variants
-    logger.info("Step 4/4 — composing prompts & generating variants", extra={"product_id": product_id})
+    # Compose category-based prompts
     title = product.get("title", "")
     jewellery_type = (product.get("jewellery_type") or "other").strip().lower()
     wholesaler_id = product.get("wholesaler_id")
@@ -158,7 +141,7 @@ async def process_product_image(product: dict) -> list[str]:
     results = await asyncio.gather(
         *[
             _generate_variant(
-                reve_url=reve_url,
+                input_image_url=raw_image_url,
                 product_id=product_id,
                 variant_index=i + 1,
                 prompt=p,
@@ -179,7 +162,7 @@ async def process_product_image(product: dict) -> list[str]:
 
     logger.info(f"{len(successful_urls)}/{variant_count} variants generated", extra={"product_id": product_id})
 
-    # Step 6: Persist to database
+    # Persist to database
     await update_product_generated_images(product_id, successful_urls, update_image_url=True)
 
     elapsed_ms = int((time.time() - start) * 1000)
@@ -191,7 +174,10 @@ async def process_product_image(product: dict) -> list[str]:
 async def process_job(job: dict) -> None:
     """Worker-facing pipeline wrapper for job queue processing."""
     job_id = job["id"]
-    raw_url = job.get("raw_url")
+    raw_url = job.get("raw_url") or job.get("image_url")
+    if not raw_url:
+        raise ValueError(f"Job {job_id} has no raw_url or image_url")
+
     title = job.get("title", "")
     jewellery_type = (job.get("jewellery_type") or "other").strip().lower()
     wholesaler_id = job.get("wholesaler_id")
@@ -200,16 +186,6 @@ async def process_job(job: dict) -> None:
     logger.info("Worker job started", extra={"job_id": job_id})
 
     try:
-        logger.info("Step 1/4 — downloading image", extra={"job_id": job_id})
-        image_bytes = await download_image(raw_url)
-
-        logger.info("Step 2/4 — removing background (Reve)", extra={"job_id": job_id})
-        reve_output = await reve_client.remove_background(image_bytes)
-
-        reve_url = upload_file_to_storage(
-            reve_output, settings.PROCESSED_BUCKET_NAME, f"products/temp/reve_{job_id}.png"
-        )
-
         item_description = f"{title} ({jewellery_type})" if title else jewellery_type
         composed = await prompt_composer.get_composed_prompt(
             jewellery_type=jewellery_type,
@@ -227,10 +203,10 @@ async def process_job(job: dict) -> None:
             wholesaler_id=wholesaler_id,
         )
 
-        logger.info("Step 3/4 — enhancing image (Nanobana)", extra={"job_id": job_id})
-        final_image = await nanobana_client.enhance_image(reve_url, prompt=final_prompt)
+        logger.info("Enhancing image directly with Nanobana", extra={"job_id": job_id})
+        final_image = await nanobana_client.enhance_image(raw_url, prompt=final_prompt)
 
-        logger.info("Step 4/4 — uploading processed image", extra={"job_id": job_id})
+        logger.info("Uploading processed image", extra={"job_id": job_id})
         processed_url = upload_processed_image(final_image, job_id)
 
         if log_id:

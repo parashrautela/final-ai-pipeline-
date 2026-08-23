@@ -177,9 +177,6 @@ class TestAiGenerationLogsRepository(unittest.IsolatedAsyncioTestCase):
 
 class TestPipelinePromptIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("app.services.pipeline.upload_processed_image_variant", return_value="https://storage.com/processed_v1.png")
-    @patch("app.services.pipeline.upload_file_to_storage", return_value="https://storage.com/reve.png")
-    @patch("app.services.pipeline.resolve_product_image", return_value=b"fake_raw_bytes")
-    @patch("app.services.pipeline.reve_client.remove_background", new_callable=AsyncMock)
     @patch("app.services.pipeline.nanobana_client.enhance_image", new_callable=AsyncMock)
     @patch("app.services.pipeline.update_product_generated_images", new_callable=AsyncMock)
     @patch("app.services.pipeline.log_ai_generation_start", new_callable=AsyncMock)
@@ -190,12 +187,8 @@ class TestPipelinePromptIntegration(unittest.IsolatedAsyncioTestCase):
         mock_log_start,
         mock_update_images,
         mock_nanobana,
-        mock_reve,
-        mock_resolve,
-        mock_upload_storage,
         mock_upload_variant,
     ):
-        mock_reve.return_value = b"fake_reve_bytes"
         mock_nanobana.return_value = b"fake_nanobana_bytes"
         mock_log_start.return_value = "log-id-test"
 
@@ -205,6 +198,7 @@ class TestPipelinePromptIntegration(unittest.IsolatedAsyncioTestCase):
             "id": str(uuid4()),
             "title": "Royal Kundan Jhumka",
             "jewellery_type": "jhumka",
+            "image_url": "https://storage.com/raw_image.jpg",
             "wholesaler_id": str(uuid4()),
         }
 
@@ -224,9 +218,10 @@ class TestPipelinePromptIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Royal Kundan Jhumka", call_kwargs["composed_prompt"])
             self.assertIn("SCENE 1", call_kwargs["composed_prompt"])
 
-            # Check that nanobana_client was passed the prompt
+            # Check that nanobana_client was passed the prompt and raw image URL
             mock_nanobana.assert_called_once()
-            _, nb_kwargs = mock_nanobana.call_args
+            nb_args, nb_kwargs = mock_nanobana.call_args
+            self.assertEqual(nb_args[0], "https://storage.com/raw_image.jpg")
             self.assertIn("CATEGORY RULES — JHUMKA", nb_kwargs["prompt"])
 
             # Check completion log
