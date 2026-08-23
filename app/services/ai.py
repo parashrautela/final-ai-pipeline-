@@ -139,9 +139,23 @@ class NanobanaClient:
             "Content-Type": "application/json",
         }
 
-    # Hard cap — Nano Banana's tokenizer crashes on prompts > ~2000 chars.
-    # Keep well under the limit for reliable generation.
-    _MAX_PROMPT_CHARS = 1500
+    # Hard API limit, verified against the live endpoint: generate-pro answers
+    # 422 "Prompt length must be between 3 and 5000" above this. Measured
+    # exactly — 5000 is accepted, 5001 is rejected. This is a limit of the
+    # nanobananaapi.ai wrapper, NOT of the underlying model (which takes a 64K
+    # token context), so it cannot be raised by switching model or resolution.
+    #
+    # NOTE: the composed base + category module + scene currently runs ~18k
+    # chars, so ~72% of every prompt is being discarded here. Truncation is a
+    # safety net, not a solution — the prompt_modules rows need to be rewritten
+    # to fit inside this budget for the category rules to actually reach the model.
+    _MAX_PROMPT_CHARS = 5000
+
+    # Truncation keeps this many trailing chars. `pipeline.py` appends the
+    # per-variant SCENE directive LAST (longest is ~226 chars), so a plain
+    # head-slice would delete the only text that differs between variants and
+    # render 4 identical images.
+    _PROMPT_TAIL_CHARS = 400
 
     async def enhance_image(
         self, image_url: str, *, prompt: str | None = None
@@ -149,19 +163,31 @@ class NanobanaClient:
         """Send image URL to Nanobana Pro, return 4K enhanced image bytes."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
 
-        # Safety: truncate oversized prompts to prevent Nano Banana 500 errors
+        # Keep the head and the tail so the trailing SCENE directive survives —
+        # see _PROMPT_TAIL_CHARS. The elision marker counts against the budget,
+        # so subtract it too: an off-by-one here is a 422 from the API.
         if len(active_prompt) > self._MAX_PROMPT_CHARS:
-            logger.warning(
-                f"Prompt truncated from {len(active_prompt)} to {self._MAX_PROMPT_CHARS} chars"
+            elision = "\n\n[...]\n\n"
+            head_chars = (
+                self._MAX_PROMPT_CHARS - self._PROMPT_TAIL_CHARS - len(elision)
             )
-            active_prompt = active_prompt[: self._MAX_PROMPT_CHARS]
+            logger.warning(
+                f"Prompt is {len(active_prompt)} chars, over the {self._MAX_PROMPT_CHARS} "
+                f"limit — keeping the first {head_chars} and last {self._PROMPT_TAIL_CHARS}. "
+                f"Category-module rules in the middle are being dropped."
+            )
+            active_prompt = (
+                active_prompt[:head_chars]
+                + elision
+                + active_prompt[-self._PROMPT_TAIL_CHARS :]
+            )
 
-        # Using generate-pro endpoint with image_size "4K" for native 4K resolution output
+        # Using generate-pro endpoint with resolution "4K" for native 4K output
         payload = {
             "prompt": active_prompt,
             "type": "IMAGETOIAMGE",
             "imageUrls": [image_url],
-            "image_size": "4K",
+            "resolution": "4K",
             "callBackUrl": "https://api.nanobananaapi.ai/callback",  # Required by API
         }
         try:

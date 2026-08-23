@@ -181,13 +181,27 @@ async def update_job_status(
         # If optional columns (like error_message or processing_time_ms) don't exist in the table,
         # retry updating just status
         if exc.code == "PGRST204":
+            logger.warning(
+                f"update_job_status: '{_TABLE}' rejected one or more optional columns "
+                f"(payload keys: {list(payload.keys())}) — retrying with status only",
+                extra={"job_id": job_id, "status": status},
+            )
             try:
                 minimal_payload = {"status": status}
                 get_supabase().table(_TABLE).update(minimal_payload).eq("id", job_id).execute()
                 logger.info(f"Job status (minimal) → {status}", extra={"job_id": job_id})
                 return
-            except Exception:
-                pass
+            except Exception as retry_exc:
+                # This is the real failure if it happens: even 'status' isn't a column
+                # on `_TABLE`, so the job can never be marked. Surface it — the original
+                # error_message-missing exception below is a red herring once we're here.
+                logger.error(
+                    f"update_job_status: minimal retry ALSO failed — '{_TABLE}' may be "
+                    f"missing the 'status' column, or job_id={job_id} doesn't exist",
+                    extra={"job_id": job_id, "status": status},
+                    exc_info=retry_exc,
+                )
+                return
         logger.error("update_job_status failed", extra={"job_id": job_id, "status": status}, exc_info=exc)
     except Exception as exc:
         logger.error("update_job_status failed", extra={"job_id": job_id, "status": status}, exc_info=exc)
