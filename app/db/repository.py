@@ -386,3 +386,98 @@ async def log_ai_generation_complete(
             break
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Credits (Treasure Chest)
+#
+# Every one of these is a `SECURITY DEFINER` RPC that only `service_role` may
+# execute — see migrations/004_credits_treasure_chest.sql. This module holds
+# the only service-role key in the system, which is precisely why the debit
+# belongs here and not in either client.
+#
+# Note what is NOT passed: a price. The RPC reads it from `credit_prices`
+# inside the same transaction, so a tampered client cannot charge itself one
+# credit for a ten-credit action.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def spend_credits(
+    user_id: str,
+    feature_key: str,
+    idempotency_key: str,
+    reference_type: Optional[str] = None,
+    reference_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Debit a wholesaler's wallet. Returns the RPC's result dict.
+
+    Success:      {"ok": True,  "charged": 10, "balance": 90}
+    Out of funds: {"ok": False, "error": "INSUFFICIENT_CREDITS",
+                   "required": 10, "balance": 4, "short_by": 6}
+    Replay:       {"ok": True,  "replayed": True, ...}
+
+    A raised exception here means the ledger is unreachable, which must NOT be
+    treated as "free" — callers fail closed.
+    """
+    resp = get_supabase().rpc(
+        "spend_credits",
+        {
+            "p_user": user_id,
+            "p_feature_key": feature_key,
+            "p_idempotency_key": idempotency_key,
+            "p_reference_type": reference_type,
+            "p_reference_id": reference_id,
+            "p_metadata": metadata or {},
+        },
+    ).execute()
+    return resp.data or {"ok": False, "error": "NO_RESPONSE"}
+
+
+async def refund_credits(
+    reference_type: str,
+    reference_id: str,
+    reason: Optional[str] = None,
+) -> dict:
+    """Give back what a failed job charged.
+
+    Safe to call unconditionally: if nothing was ever debited for this
+    reference (free feature, or it failed before the debit landed) the RPC
+    returns `refunded: 0` rather than erroring. Idempotent on the reference,
+    so a retried failure handler cannot pay out twice.
+    """
+    resp = get_supabase().rpc(
+        "refund_credits",
+        {
+            "p_reference_type": reference_type,
+            "p_reference_id": reference_id,
+            "p_reason": reason,
+        },
+    ).execute()
+    return resp.data or {"ok": False, "error": "NO_RESPONSE"}
+
+
+async def count_prior_debits(reference_type: str, reference_id: str) -> int:
+    """How many times this reference has already been charged.
+
+    This is what distinguishes a first generation from a re-roll. The iOS
+    `regenerate` path reuses the SAME `chamak_generations` row, so the row id
+    alone cannot tell them apart — but the ledger can, and unlike anything the
+    client sends, it cannot be spoofed into claiming the cheaper price.
+    """
+    try:
+        resp = (
+            get_supabase()
+            .table("credit_ledger")
+            .select("id", count="exact")
+            .eq("reference_type", reference_type)
+            .eq("reference_id", reference_id)
+            .eq("kind", "debit")
+            .execute()
+        )
+        return resp.count or 0
+    except Exception as exc:
+        # Fail toward the CHEAPER price. Miscounting must never let us
+        # overcharge somebody for a first-time generation.
+        logger.warning(f"count_prior_debits failed for {reference_id}: {exc}")
+        return 0

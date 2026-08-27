@@ -9,7 +9,11 @@ import httpx
 import sentry_sdk
 
 from app.config import settings
-from app.db.repository import fetch_chamak_generation, update_chamak_generation
+from app.db.repository import (
+    fetch_chamak_generation,
+    refund_credits,
+    update_chamak_generation,
+)
 from app.logging import logger
 from app.services.ai import nanobana_client
 from app.services.storage import (
@@ -108,6 +112,44 @@ async def call_openai_vision_analysis(
     }
 
 
+async def _refund_failed_generation(generation_id: str, reason: str) -> None:
+    """Give the credits back when a job dies.
+
+    Called from the failure paths only, and safe to call even when nothing was
+    charged (free feature, or the failure landed before the debit) — the RPC
+    answers `refunded: 0` instead of erroring. It is idempotent on the
+    generation id, so a retried handler cannot pay out twice.
+
+    Refunds are deliberately visible in the wholesaler's history rather than
+    handled as an invisible hold: "Refunded — generation failed" earns more
+    trust than a number that quietly returns.
+
+    Never allowed to mask the original failure — if the refund itself breaks we
+    log loudly and move on, because the generation status still has to be
+    written.
+    """
+    if not settings.CREDITS_ENABLED:
+        return
+    try:
+        result = await refund_credits("chamak_generation", generation_id, reason)
+        if result.get("refunded"):
+            logger.info(
+                f"Refunded {result.get('granted') or result.get('refunded')} credits for {generation_id}",
+                extra={"generation_id": generation_id, "reason": reason},
+            )
+    except Exception:
+        logger.error(
+            f"REFUND FAILED for {generation_id} — this wholesaler was charged "
+            f"for work that did not complete and needs a manual credit.",
+            extra={"generation_id": generation_id, "reason": reason},
+            exc_info=True,
+        )
+        if settings.SENTRY_DSN:
+            sentry_sdk.capture_message(
+                f"Chamak refund failed for {generation_id} ({reason})", level="error"
+            )
+
+
 async def run_stage1_vision_analysis(generation_id: str) -> None:
     """Stage 1: Vision Analysis for Chamak AI Fusion."""
     try:
@@ -147,6 +189,13 @@ async def run_stage1_vision_analysis(generation_id: str) -> None:
                 "status": status,
             },
         )
+
+        if status == "failed":
+            # Rejecting the images is our call, not a mistake they made, so we
+            # do not keep their credits for it.
+            await _refund_failed_generation(
+                generation_id, f"Content check failed: {content_flag}"
+            )
         logger.info(
             f"Chamak Stage 1 completed for {generation_id} -> status={status}, flag={content_flag}"
         )
@@ -164,6 +213,8 @@ async def run_stage1_vision_analysis(generation_id: str) -> None:
             await update_chamak_generation(generation_id, {"status": "failed"})
         except Exception:
             logger.error(f"Failed to persist failure status for {generation_id}", exc_info=True)
+
+        await _refund_failed_generation(generation_id, "Analysis failed")
 
 
 def compile_chamak_prompt(
@@ -340,3 +391,5 @@ async def run_stage4_generation(generation_id: str) -> None:
             await update_chamak_generation(generation_id, {"status": "failed"})
         except Exception:
             logger.error(f"Failed to persist failure status for {generation_id}", exc_info=True)
+
+        await _refund_failed_generation(generation_id, "Generation failed")

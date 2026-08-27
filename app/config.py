@@ -138,6 +138,51 @@ class Settings(BaseSettings):
     # Database
     DB_TABLE_NAME: str = "images"
 
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    # Supabase project JWT secret (Dashboard → Settings → API → JWT Secret).
+    # When set, end-user tokens are verified locally with HS256 — no network
+    # hop, and credit-bearing routes keep working if Supabase Auth blips.
+    # When blank, app/auth.py falls back to asking Supabase to resolve the
+    # token, which is correct for projects using asymmetric signing keys.
+    # Either way an unverifiable token is rejected; there is no anonymous path.
+    SUPABASE_JWT_SECRET: str = ""
+
+    # ── Credits (Treasure Chest) ─────────────────────────────────────────────
+    # Master switch. Ships OFF so the rollout can be staged safely:
+    #   1. deploy this code with CREDITS_ENABLED=false — auth is enforced,
+    #      nothing is charged
+    #   2. run migrations/004_credits_treasure_chest.sql
+    #   3. verify wallets are populating, then flip this to true
+    # With it off, credit-bearing routes behave exactly as they did before.
+    CREDITS_ENABLED: bool = False
+
+    # What a single AI call actually costs us, in paise, recorded into
+    # credit_ledger.metadata on every debit. We bill a FLAT price — these are
+    # only so real margin per generation is measurable rather than guessed.
+    # Update them when the vendor bill changes; nothing in the pricing logic
+    # reads these.
+    COST_PAISE_VISION_ANALYSIS: int = 150     # OpenAI vision, Chamak stage 1
+    COST_PAISE_IMAGE_GENERATION: int = 950    # one Nano Banana generation
+    COST_PAISE_BACKGROUND_REMOVAL: int = 200  # one Reve call
+
+    @property
+    def chamak_generation_cost_paise(self) -> int:
+        """Rough COGS of one Chamak fusion: one vision call + one image."""
+        return self.COST_PAISE_VISION_ANALYSIS + self.COST_PAISE_IMAGE_GENERATION
+
+    @property
+    def product_upload_cost_paise(self) -> int:
+        """Rough COGS of one product upload: a background removal + N variants.
+
+        Worth reading twice: at the default variant_count of 4 this is several
+        times the cost of a Chamak fusion, which is why `product.upload` is
+        seeded at zero credits rather than at a guessed price.
+        """
+        return (
+            self.COST_PAISE_BACKGROUND_REMOVAL
+            + self.COST_PAISE_IMAGE_GENERATION * self.variant_count
+        )
+
     # Storage
     RAW_BUCKET_NAME: str = "plant-images"
     RAW_STORAGE_FOLDER: str = "products"

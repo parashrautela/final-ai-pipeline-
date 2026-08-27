@@ -4,7 +4,17 @@ from typing import Optional
 
 # pyrefly: ignore [missing-import]
 import sentry_sdk
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
@@ -13,11 +23,14 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from app.auth import require_ownership, require_user
 from app.config import settings
 from app.db.repository import (
+    count_prior_debits,
     create_product,
     fetch_chamak_generation,
     fetch_job_by_id,
+    spend_credits,
     update_chamak_generation,
     update_job_status,
     update_product_image_url,
@@ -122,6 +135,87 @@ async def ensure_cors_headers(request, call_next):
             response.headers["Access-Control-Allow-Credentials"] = "true"
 
     return response
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Credit gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _charge_or_reject(
+    *,
+    user_id: Optional[str],
+    feature_key: str,
+    generation_id: str,
+    idempotency_key: Optional[str],
+    metadata: Optional[dict] = None,
+) -> Optional[dict]:
+    """Debit before any work starts, or refuse the request.
+
+    Returns the RPC result, or None when metering is switched off.
+
+    Fails CLOSED. If the ledger is unreachable we return 503 rather than
+    letting the job through — the old upload-quota check failed open, which is
+    fine for a courtesy limit and unacceptable for money.
+    """
+    if not settings.CREDITS_ENABLED or user_id is None:
+        return None
+
+    if idempotency_key:
+        key = idempotency_key
+    else:
+        # Fallback for clients that predate the header. Deliberately biased
+        # toward UNDER-charging: keyed on the row alone, so a network retry can
+        # never double-charge — at the cost of re-rolls past the first being
+        # free until both clients send the header.
+        key = f"chamak:{feature_key}:{generation_id}"
+        logger.warning(
+            "No Idempotency-Key header — falling back to a row-derived key. "
+            "Re-rolls on this generation will not be charged.",
+            extra={"generation_id": generation_id, "feature_key": feature_key},
+        )
+
+    try:
+        result = await spend_credits(
+            user_id=user_id,
+            feature_key=feature_key,
+            idempotency_key=key,
+            reference_type="chamak_generation",
+            reference_id=generation_id,
+            metadata=metadata or {},
+        )
+    except Exception as exc:
+        logger.error(
+            f"Credit ledger unreachable for {generation_id}: {exc}",
+            extra={"generation_id": generation_id},
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Could not reach your Treasure Chest just now. Please try again.",
+        ) from exc
+
+    if result.get("ok"):
+        return result
+
+    if result.get("error") == "INSUFFICIENT_CREDITS":
+        # 402 so the app can tell "you are out of credits" apart from every
+        # other failure and open the top-up sheet instead of an error alert.
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "INSUFFICIENT_CREDITS",
+                "message": "You do not have enough credits for this.",
+                "required": result.get("required"),
+                "balance": result.get("balance"),
+                "short_by": result.get("short_by"),
+            },
+        )
+
+    logger.error(
+        f"Credit debit refused for {generation_id}: {result}",
+        extra={"generation_id": generation_id},
+    )
+    raise HTTPException(status_code=500, detail="Could not process credits for this action.")
 
 
 @app.get("/health")
@@ -316,8 +410,16 @@ async def chamak_analyze(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
+    user_id: Optional[str] = Depends(require_user),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
-    """Trigger Stage 1 vision analysis for a Chamak jewelry fusion job."""
+    """Trigger Stage 1 vision analysis for a Chamak jewelry fusion job.
+
+    Analysis is free (`chamak.analyze` is seeded at 0 credits) — it is the hook
+    that shows a wholesaler what their designs are worth before asking for
+    anything. It still goes through the meter so the path is exercised and
+    pricing it later is a one-row UPDATE rather than a code change.
+    """
     generation_id = body.generation_id
     row = await fetch_chamak_generation(generation_id)
     if not row:
@@ -325,6 +427,15 @@ async def chamak_analyze(
             status_code=404,
             detail=f"Chamak generation '{generation_id}' not found",
         )
+    require_ownership(row, user_id)
+
+    await _charge_or_reject(
+        user_id=user_id,
+        feature_key="chamak.analyze",
+        generation_id=generation_id,
+        idempotency_key=idempotency_key,
+        metadata={"ai_cost_paise": settings.COST_PAISE_VISION_ANALYSIS},
+    )
 
     await update_chamak_generation(generation_id, {"status": "analyzing"})
     background_tasks.add_task(run_stage1_vision_analysis, generation_id)
@@ -343,8 +454,15 @@ async def chamak_generate(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
+    user_id: Optional[str] = Depends(require_user),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
-    """Trigger Stage 3 prompt compilation & Stage 4 image generation."""
+    """Trigger Stage 3 prompt compilation & Stage 4 image generation.
+
+    This is the paid action. The debit happens here, synchronously, before the
+    background task is queued — so a wholesaler who cannot afford it gets a 402
+    and we never burn an API call we cannot bill for.
+    """
     generation_id = body.generation_id
     row = await fetch_chamak_generation(generation_id)
     if not row:
@@ -352,6 +470,25 @@ async def chamak_generate(
             status_code=404,
             detail=f"Chamak generation '{generation_id}' not found",
         )
+    require_ownership(row, user_id)
+
+    # A re-roll is cheaper because stage 1 was already paid for. The iOS
+    # `regenerate` path reuses the SAME row, so the id cannot distinguish the
+    # two — but the ledger can. Deriving it server-side means a client cannot
+    # simply claim the cheaper price.
+    prior = await count_prior_debits("chamak_generation", generation_id)
+    feature_key = "chamak.reroll" if prior > 0 else "chamak.generate"
+
+    await _charge_or_reject(
+        user_id=user_id,
+        feature_key=feature_key,
+        generation_id=generation_id,
+        idempotency_key=idempotency_key,
+        metadata={
+            "ai_cost_paise": settings.COST_PAISE_IMAGE_GENERATION,
+            "attempt": prior + 1,
+        },
+    )
 
     await update_chamak_generation(generation_id, {"status": "generating"})
     background_tasks.add_task(run_stage4_generation, generation_id)
@@ -366,7 +503,11 @@ async def chamak_generate(
 
 @app.get("/api/chamak/{generation_id}")
 @limiter.limit("60/minute")
-async def get_chamak_status(request: Request, generation_id: str):
+async def get_chamak_status(
+    request: Request,
+    generation_id: str,
+    user_id: Optional[str] = Depends(require_user),
+):
     """Fetch the current status and output of a Chamak generation job."""
     try:
         validated_id = validate_uuid(generation_id, "generation_id")
@@ -379,5 +520,6 @@ async def get_chamak_status(request: Request, generation_id: str):
             status_code=404,
             detail=f"Chamak generation '{generation_id}' not found",
         )
+    require_ownership(row, user_id)
     return row
 
