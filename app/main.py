@@ -37,6 +37,7 @@ from app.db.repository import (
 )
 from app.logging import logger
 from app.services.chamak import (
+    run_set_creation_generation,
     run_stage1_vision_analysis,
     run_stage4_generation,
 )
@@ -496,6 +497,82 @@ async def chamak_generate(
 
     return {
         "message": "Chamak image generation queued.",
+        "generation_id": generation_id,
+        "status": "generating",
+    }
+
+
+@app.post("/api/set-creation/generate", status_code=202)
+@limiter.limit("10/minute")
+async def set_creation_generate(
+    request: Request,
+    body: ChamakGenerationRequest,
+    background_tasks: BackgroundTasks,
+    user_id: Optional[str] = Depends(require_user),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
+    """Stage two pieces of jewelry into one matched-set photograph.
+
+    Set Creation has no analysis stage — nothing about either piece needs to be
+    understood in order to reproduce it — so unlike Fusion there is only this
+    one paid call, and the row goes straight from `queued` to `generating`.
+
+    Same debit-before-work rule as Chamak: a wholesaler who cannot afford it
+    gets a 402 and we never burn an API call we cannot bill for.
+    """
+    generation_id = body.generation_id
+    row = await fetch_chamak_generation(generation_id)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Generation '{generation_id}' not found",
+        )
+    require_ownership(row, user_id)
+
+    if row.get("mode") != "set_creation":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This generation is not a Set Creation row. Use "
+                "/api/chamak/generate for fusions."
+            ),
+        )
+
+    # Both images are mandatory here. Fusion degrades to a single image when
+    # the second is missing; a "set" of one piece is meaningless, so refuse
+    # before charging rather than produce something the wholesaler cannot use.
+    if not row.get("source_image_1_url") or not row.get("source_image_2_url"):
+        raise HTTPException(
+            status_code=422,
+            detail="Set Creation needs two source images.",
+        )
+
+    # Same server-side re-roll pricing as Chamak: derived from the ledger, not
+    # claimed by the client.
+    prior = await count_prior_debits("chamak_generation", generation_id)
+    feature_key = "chamak.reroll" if prior > 0 else "chamak.set_creation"
+
+    await _charge_or_reject(
+        user_id=user_id,
+        feature_key=feature_key,
+        generation_id=generation_id,
+        idempotency_key=idempotency_key,
+        metadata={
+            "ai_cost_paise": settings.COST_PAISE_IMAGE_GENERATION,
+            "attempt": prior + 1,
+            "mode": "set_creation",
+            "backdrop": row.get("set_backdrop"),
+        },
+    )
+
+    await update_chamak_generation(generation_id, {"status": "generating"})
+    background_tasks.add_task(run_set_creation_generation, generation_id)
+    logger.info(
+        "Set Creation generation enqueued", extra={"generation_id": generation_id}
+    )
+
+    return {
+        "message": "Set creation queued.",
         "generation_id": generation_id,
         "status": "generating",
     }

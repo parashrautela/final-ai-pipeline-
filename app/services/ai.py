@@ -304,6 +304,150 @@ class NanobanaClient:
             logger.error(f"Nanobana enhance_image failed: {exc}", exc_info=True)
             raise
 
+    # ── Set Creation ────────────────────────────────────────────────────────
+    # Deliberately separate from enhance_image() above rather than a flag on
+    # it, for two reasons:
+    #
+    # 1. Different endpoint. enhance_image uses /generate-pro; this uses plain
+    #    /generate, which NANOBANA_API_REFERENCE.md measures at ~2 credits per
+    #    image against generate-pro's 9-12. Set Creation does not need the pro
+    #    endpoint, and switching enhance_image over is a live-pricing change to
+    #    the product pipeline that belongs in its own reviewed commit.
+    # 2. Different input shape. This sends MULTIPLE imageUrls; enhance_image
+    #    has only ever sent one.
+    #
+    # Verified live against the API on 2026-08-29: two URLs in `imageUrls`
+    # are accepted, both are echoed back in the task's paramJson, and both
+    # appear faithfully in the output image.
+    _GENERATE_URL_BASIC = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
+
+    # The API caps prompts the same way on both endpoints.
+    _SET_MAX_PROMPT_CHARS = 5000
+
+    async def _await_task(self, task_id: str, *, label: str = "task") -> bytes:
+        """Poll record-info until the task finishes, then download the result.
+
+        Mirrors the polling in enhance_image(). Kept as its own method so the
+        live product/fusion path is not touched while Set Creation is being
+        proven; fold the two together once it is.
+        """
+        max_polls = 60
+        poll_interval = 5
+
+        for i in range(max_polls):
+            await asyncio.sleep(poll_interval)
+
+            async with httpx.AsyncClient(timeout=30.0) as poll_client:
+                status_response = await _request_with_retry(
+                    poll_client,
+                    "GET",
+                    f"{self._STATUS_URL}?taskId={task_id}",
+                    headers=self._headers,
+                    max_retries=2,
+                )
+                status_data = status_response.json()
+
+            data = status_data.get("data") or {}
+
+            if i % 5 == 0:
+                logger.info(
+                    f"Nanobana {label} waiting... {(i + 1) * poll_interval}s elapsed "
+                    f"(poll {i + 1}/{max_polls}) taskId={task_id}"
+                )
+
+            if data.get("successFlag") in (1, "1"):
+                res_url = (
+                    (data.get("response") or {}).get("resultImageUrl")
+                    or data.get("resultImageUrl")
+                    or data.get("imageUrl")
+                )
+                if not res_url:
+                    raise ValueError(
+                        f"Nanobana {label} {task_id} succeeded but returned no image URL. "
+                        f"Response: {status_data}"
+                    )
+                async with httpx.AsyncClient(timeout=120.0) as dl_client:
+                    img = await dl_client.get(res_url, follow_redirects=True)
+                    img.raise_for_status()
+                    logger.info(f"Downloaded Nanobana {label} result: {len(img.content)} bytes")
+                    return img.content
+
+            if data.get("failFlag") in (1, "1") or status_data.get("failFlag") in (1, "1"):
+                raise RuntimeError(
+                    f"Nanobana {label} {task_id} failed: "
+                    f"{data.get('errorMessage') or status_data}"
+                )
+
+        raise TimeoutError(
+            f"Nanobana {label} {task_id} did not finish within "
+            f"{max_polls * poll_interval}s"
+        )
+
+    async def compose_set(
+        self,
+        image_urls: list[str],
+        *,
+        prompt: str,
+        image_size: str = "3:4",
+    ) -> bytes:
+        """Compose several source images into ONE staged photograph.
+
+        Every URL must be publicly fetchable — the API downloads them itself
+        and will not accept inline bytes or a Supabase signed URL that has
+        already expired.
+
+        Order is load-bearing: the prompt refers to "Image 1" and "Image 2" and
+        hangs position-dependent instructions off both, so the caller must pass
+        them in the order the prompt describes.
+        """
+        if not image_urls:
+            raise ValueError("compose_set requires at least one image URL")
+
+        active_prompt = prompt
+        if len(active_prompt) > self._SET_MAX_PROMPT_CHARS:
+            logger.warning(
+                f"Set prompt is {len(active_prompt)} chars, over the "
+                f"{self._SET_MAX_PROMPT_CHARS} limit — truncating."
+            )
+            active_prompt = active_prompt[: self._SET_MAX_PROMPT_CHARS]
+
+        payload = {
+            "prompt": active_prompt,
+            # The vendor's own spelling. Not a typo on our side — see
+            # NANOBANA_API_REFERENCE.md; "IMAGETOIMAGE" is rejected.
+            "type": "IMAGETOIAMGE",
+            "imageUrls": image_urls,
+            "numImages": 1,
+            "image_size": image_size,
+            "callBackUrl": "https://api.nanobananaapi.ai/callback",
+        }
+
+        logger.info(
+            f"Nanobana set composition — {len(image_urls)} source images, "
+            f"image_size={image_size}, prompt={len(active_prompt)} chars"
+        )
+
+        async with httpx.AsyncClient(timeout=60.0) as submit_client:
+            response = await _request_with_retry(
+                submit_client,
+                "POST",
+                self._GENERATE_URL_BASIC,
+                headers=self._headers,
+                json=payload,
+                max_retries=settings.MAX_RETRIES,
+            )
+            task_data = response.json()
+
+        data_obj = task_data.get("data") or {}
+        task_id = (
+            task_data.get("taskId") or data_obj.get("taskId") or data_obj.get("id")
+        )
+        if not task_id:
+            raise ValueError(f"Failed to get taskId from Nanobana: {task_data}")
+
+        logger.info(f"Nanobana set task queued — taskId={task_id}")
+        return await self._await_task(task_id, label="set")
+
 
 # Instantiated once at module load and reused across requests.
 # Keeps API key parsing and header setup out of every request path.
