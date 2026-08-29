@@ -40,6 +40,7 @@ from app.services.chamak import (
     run_set_creation_generation,
     run_stage1_vision_analysis,
     run_stage4_generation,
+    run_stage4_generation_openai,
 )
 from app.services.pipeline import process_product_image
 from app.services.storage import upload_raw_image
@@ -497,6 +498,67 @@ async def chamak_generate(
 
     return {
         "message": "Chamak image generation queued.",
+        "generation_id": generation_id,
+        "status": "generating",
+    }
+
+
+@app.post("/api/chamak/generate-v2", status_code=202)
+@limiter.limit("10/minute")
+async def chamak_generate_v2(
+    request: Request,
+    body: ChamakGenerationRequest,
+    background_tasks: BackgroundTasks,
+    user_id: Optional[str] = Depends(require_user),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
+    """Chamak 2.0 — the same fusion, rendered by OpenAI instead of Nanobana.
+
+    Deliberately a near-copy of `chamak_generate`: same ownership check, same
+    re-roll pricing rule, same debit-before-work order, same row shape. Only
+    the background task differs, so a 1.0 and a 2.0 run on identical inputs
+    isolate the renderer as the single changed variable.
+
+    Kept as its own route rather than a flag on `/api/chamak/generate` because
+    that route is live and paid, and the whole point of the comparison is that
+    1.0's behaviour is not perturbed while it runs.
+    """
+    generation_id = body.generation_id
+    row = await fetch_chamak_generation(generation_id)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chamak generation '{generation_id}' not found",
+        )
+    require_ownership(row, user_id)
+
+    # Same ledger-derived pricing as 1.0. Debits for both pipelines land on the
+    # same generation id, so switching pipelines on a row that has already been
+    # generated is correctly priced as a re-roll.
+    prior = await count_prior_debits("chamak_generation", generation_id)
+    feature_key = "chamak.reroll" if prior > 0 else "chamak.generate"
+
+    await _charge_or_reject(
+        user_id=user_id,
+        feature_key=feature_key,
+        generation_id=generation_id,
+        idempotency_key=idempotency_key,
+        metadata={
+            "ai_cost_paise": settings.COST_PAISE_IMAGE_GENERATION,
+            "attempt": prior + 1,
+            "pipeline": "chamak_openai",
+        },
+    )
+
+    await update_chamak_generation(generation_id, {"status": "generating"})
+    background_tasks.add_task(run_stage4_generation_openai, generation_id)
+    logger.info(
+        "Chamak 2.0 (OpenAI) image generation enqueued",
+        extra={"generation_id": generation_id},
+    )
+
+    return {
+        "message": "Chamak 2.0 image generation queued.",
         "generation_id": generation_id,
         "status": "generating",
     }

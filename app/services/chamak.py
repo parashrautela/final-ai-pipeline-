@@ -15,7 +15,7 @@ from app.db.repository import (
     update_chamak_generation,
 )
 from app.logging import logger
-from app.services.ai import nanobana_client
+from app.services.ai import nanobana_client, openai_image_client
 from app.services.storage import (
     fetch_image_bytes_and_content_type,
     upload_chamak_output,
@@ -381,6 +381,110 @@ async def run_stage4_generation(generation_id: str) -> None:
     except Exception as exc:
         logger.error(
             f"Chamak Stage 4 generation failed for {generation_id}: {exc}",
+            extra={"generation_id": generation_id},
+            exc_info=True,
+        )
+        if settings.SENTRY_DSN:
+            sentry_sdk.capture_exception(exc)
+
+        try:
+            await update_chamak_generation(generation_id, {"status": "failed"})
+        except Exception:
+            logger.error(f"Failed to persist failure status for {generation_id}", exc_info=True)
+
+        await _refund_failed_generation(generation_id, "Generation failed")
+
+
+async def run_stage4_generation_openai(generation_id: str) -> None:
+    """Stage 4 for Chamak 2.0 — same fusion, rendered by OpenAI instead.
+
+    A deliberate near-copy of `run_stage4_generation`. Every step that is not
+    the vendor call is identical, including the compiled prompt, so a 1.0 run
+    and a 2.0 run on the same row differ by exactly one variable and can be
+    compared directly.
+
+    The one substantive difference is the point of the exercise: 1.0 calls
+    `nanobana_client.enhance_image(image_url=img1_url, ...)`, which takes a
+    single image, so `source_image_2_url` never reaches the model — Design 2
+    exists only as prose inside the compiled prompt. This path sends BOTH
+    designs as real reference images.
+
+    Not folded into the 1.0 function behind a flag on purpose: 1.0 is a live,
+    paid, working path, and keeping it byte-identical is what makes the
+    comparison trustworthy.
+    """
+    try:
+        logger.info(f"Starting Chamak 2.0 (OpenAI) generation for {generation_id}")
+        row = await fetch_chamak_generation(generation_id)
+        if not row:
+            logger.error(f"Chamak generation {generation_id} not found")
+            return
+
+        wholesaler_id = str(row.get("wholesaler_id") or "default_wholesaler")
+        await update_chamak_generation(generation_id, {"status": "generating"})
+
+        analysis = row.get("stage1_analysis_json") or {}
+        form_json = row.get("wholesaler_form_json") or {}
+        note_text = row.get("note_text")
+
+        # Stage 3 Prompt Compilation — the SAME compiler as 1.0, deliberately.
+        compiled_prompt = compile_chamak_prompt(analysis, form_json, note_text)
+        logger.info(
+            f"Compiled Chamak 2.0 prompt for {generation_id}: {compiled_prompt[:120]}...",
+            extra={"generation_id": generation_id},
+        )
+
+        # Both source images. Unlike 1.0, image 2 is required — a fusion with
+        # one reference is the bug this pipeline exists to rule out, so it
+        # fails loudly here rather than silently rendering from Design 1.
+        img1_url = row.get("source_image_1_url")
+        img2_url = row.get("source_image_2_url")
+        if not img1_url or not img2_url:
+            raise ValueError(
+                "Chamak 2.0 requires both source_image_1_url and source_image_2_url "
+                f"(got 1={bool(img1_url)}, 2={bool(img2_url)})"
+            )
+
+        img1_bytes, img1_mime = await fetch_image_bytes_and_content_type(img1_url)
+        img2_bytes, img2_mime = await fetch_image_bytes_and_content_type(img2_url)
+
+        # Order is load-bearing: the compiled prompt refers to Design 1 and
+        # Design 2 positionally.
+        generated_bytes = await openai_image_client.fuse_images(
+            [(img1_bytes, img1_mime), (img2_bytes, img2_mime)],
+            prompt=compiled_prompt,
+        )
+
+        output_storage_path = upload_chamak_output(
+            file_content=generated_bytes,
+            wholesaler_id=wholesaler_id,
+            generation_id=generation_id,
+        )
+
+        completed_at = datetime.now(timezone.utc).isoformat()
+
+        await update_chamak_generation(
+            generation_id,
+            {
+                "compiled_prompt_text": compiled_prompt,
+                "prompt_version": settings.CHAMAK_OPENAI_PROMPT_VERSION,
+                "output_image_url": output_storage_path,
+                "status": "done",
+                "completed_at": completed_at,
+            },
+        )
+        logger.info(
+            f"Chamak 2.0 (OpenAI) generation finished successfully for {generation_id}",
+            extra={
+                "generation_id": generation_id,
+                "output_image_url": output_storage_path,
+                "completed_at": completed_at,
+            },
+        )
+
+    except Exception as exc:
+        logger.error(
+            f"Chamak 2.0 (OpenAI) generation failed for {generation_id}: {exc}",
             extra={"generation_id": generation_id},
             exc_info=True,
         )

@@ -449,7 +449,134 @@ class NanobanaClient:
         return await self._await_task(task_id, label="set")
 
 
+class OpenAIImageClient:
+    """OpenAI image generation — the renderer behind Chamak 2.0.
+
+    Exists to answer one question the Nanobana path could not: what a fusion
+    looks like when BOTH source designs actually reach the image model.
+
+    `NanobanaClient.enhance_image` — the renderer Chamak 1.0 calls — accepts a
+    single `image_url` and has only ever sent one. Design 2 reaches that model
+    as prose in the compiled prompt and never as a picture. This client sends
+    both images as real reference inputs, so 1.0 and 2.0 can be compared on
+    identical inputs with that one variable changed.
+
+    Unlike Nanobana this endpoint is synchronous: the image comes back in the
+    response body, so there is no task id and nothing to poll.
+    """
+
+    _EDITS_URL = "https://api.openai.com/v1/images/edits"
+
+    # The endpoint's own documented ceiling is far higher than anything the
+    # compiler produces, but truncating beats a 400 on a paid call.
+    _MAX_PROMPT_CHARS = 30000
+
+    def __init__(self) -> None:
+        self._api_key = settings.OPENAI_API_KEY
+
+    @property
+    def _headers(self) -> dict:
+        # Content-Type is deliberately absent: httpx sets it, with the
+        # multipart boundary, when `files=` is passed. Setting it by hand
+        # produces a boundary-less header and a 400.
+        return {"Authorization": f"Bearer {self._api_key}"}
+
+    @staticmethod
+    def _filename_for(mime: str, index: int) -> str:
+        ext = {
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/jpeg": "jpg",
+        }.get(mime, "jpg")
+        return f"design{index}.{ext}"
+
+    async def fuse_images(
+        self,
+        images: list[tuple[bytes, str]],
+        *,
+        prompt: str,
+    ) -> bytes:
+        """Blend several reference images into ONE new image.
+
+        `images` is a list of (bytes, mime_type). Order is load-bearing — the
+        compiled prompt refers to "Image 1" and "Image 2" positionally, so the
+        caller must pass them in the order the prompt describes.
+
+        Returns the raw bytes of the generated image.
+        """
+        if not images:
+            raise ValueError("fuse_images requires at least one image")
+        if not self._api_key:
+            raise ValueError("OPENAI_API_KEY is not configured in settings")
+
+        active_prompt = prompt
+        if len(active_prompt) > self._MAX_PROMPT_CHARS:
+            logger.warning(
+                f"OpenAI prompt is {len(active_prompt)} chars, over the "
+                f"{self._MAX_PROMPT_CHARS} limit — truncating."
+            )
+            active_prompt = active_prompt[: self._MAX_PROMPT_CHARS]
+
+        # Repeated `image[]` parts is the vendor's own multipart form for
+        # multi-reference edits. Each part carries an explicit filename and
+        # content type — without them the part is sent as
+        # application/octet-stream and rejected with a 400 that names the
+        # image, not the cause.
+        files = [
+            ("image[]", (self._filename_for(mime, i + 1), data, mime))
+            for i, (data, mime) in enumerate(images)
+        ]
+        form = {
+            "model": settings.OPENAI_IMAGE_MODEL,
+            "prompt": active_prompt,
+            "size": settings.OPENAI_IMAGE_SIZE,
+            "n": "1",
+        }
+
+        logger.info(
+            f"OpenAI image fusion — {len(images)} source images, "
+            f"model={settings.OPENAI_IMAGE_MODEL}, "
+            f"size={settings.OPENAI_IMAGE_SIZE}, "
+            f"prompt={len(active_prompt)} chars"
+        )
+
+        timeout = settings.OPENAI_IMAGE_TIMEOUT_SECONDS
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await _request_with_retry(
+                client,
+                "POST",
+                self._EDITS_URL,
+                headers=self._headers,
+                files=files,
+                data=form,
+                max_retries=settings.MAX_RETRIES,
+            )
+            payload = response.json()
+
+        entries = payload.get("data") or []
+        if not entries:
+            raise ValueError(f"OpenAI returned no image data: {payload}")
+
+        # GPT-image models always return base64; the `url` field that older
+        # DALL-E responses populated is never set, so there is deliberately no
+        # URL fallback here — a missing b64_json is a real error, not a
+        # different response shape to accommodate.
+        b64 = entries[0].get("b64_json")
+        if not b64:
+            raise ValueError(
+                f"OpenAI response had no b64_json. Keys present: {list(entries[0].keys())}"
+            )
+
+        image_bytes = base64.b64decode(b64)
+        usage = payload.get("usage") or {}
+        logger.info(
+            f"OpenAI image fusion complete — {len(image_bytes)} bytes, usage={usage}"
+        )
+        return image_bytes
+
+
 # Instantiated once at module load and reused across requests.
 # Keeps API key parsing and header setup out of every request path.
 reve_client = ReveClient()
 nanobana_client = NanobanaClient()
+openai_image_client = OpenAIImageClient()

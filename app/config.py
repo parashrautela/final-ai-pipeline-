@@ -198,6 +198,26 @@ class Settings(BaseSettings):
     CHAMAK_OUTPUT_BUCKET: str = "chamak-outputs"
     CHAMAK_PROMPT_VERSION: str = "v1.0-chamak"
 
+    # Chamak 2.0 — OpenAI image generation (the second fusion pipeline).
+    #
+    # Same flow as Chamak 1.0, same compiled prompt; the only difference is
+    # which vendor renders the image. Exists so the two can be compared
+    # side by side on identical inputs.
+    #
+    # Model must be pinned: the API's own default is a 1536px-capped model,
+    # so leaving this unset silently caps output resolution.
+    OPENAI_IMAGE_MODEL: str = "gpt-image-2"
+    # 2048x2048 is the 2K target. Legal on gpt-image-2 (edges divisible by 16,
+    # aspect <= 3:1, max edge 3840) but sits in OpenAI's "experimental" band
+    # above 2560x1440. Drop to "1536x1536" if the API rejects it.
+    OPENAI_IMAGE_SIZE: str = "2048x2048"
+    # Reference images are downscaled to this long edge before upload. The
+    # input token budget caps out around 1536 tokens, so sending larger buys
+    # nothing but latency.
+    OPENAI_IMAGE_MAX_REF_EDGE: int = 1024
+    OPENAI_IMAGE_TIMEOUT_SECONDS: float = 180.0
+    CHAMAK_OPENAI_PROMPT_VERSION: str = "v2.0-chamak-openai"
+
     class Config:
         env_file = ".env"
         extra = "ignore"  # silently drop any unknown keys from .env
