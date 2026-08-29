@@ -47,16 +47,32 @@ CREATE INDEX IF NOT EXISTS idx_chamak_generations_mode
 --
 -- Re-roll deliberately reuses the existing `chamak.reroll` key.
 -- ----------------------------------------------------------------------------
-INSERT INTO public.credit_prices (feature_key, credits, label, description, sort_order) VALUES
-    ('chamak.set_creation',        8,  'Set Creation',
-     'Stage two of your pieces together as one matched set photo.',            22),
-    ('chamak.set_creation_custom', 10, 'Set Creation (your photos)',
-     'Stage a set using photos you upload instead of catalogue designs.',      24)
-ON CONFLICT (feature_key) DO UPDATE
-    SET label       = EXCLUDED.label,
-        description = EXCLUDED.description,
-        credits     = EXCLUDED.credits,
-        sort_order  = EXCLUDED.sort_order;
+-- Guarded: the Treasure Chest credit schema (migration 004) has not been run
+-- on every environment, and `credit_prices` simply does not exist there. This
+-- pricing is optional — with CREDITS_ENABLED=false the pipeline never reads it,
+-- and Set Creation works fine without it. So skip rather than fail the whole
+-- migration on a database that has no credit system yet.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = 'credit_prices'
+    ) THEN
+        INSERT INTO public.credit_prices (feature_key, credits, label, description, sort_order) VALUES
+            ('chamak.set_creation',        8,  'Set Creation',
+             'Stage two of your pieces together as one matched set photo.',            22),
+            ('chamak.set_creation_custom', 10, 'Set Creation (your photos)',
+             'Stage a set using photos you upload instead of catalogue designs.',      24)
+        ON CONFLICT (feature_key) DO UPDATE
+            SET label       = EXCLUDED.label,
+                description = EXCLUDED.description,
+                credits     = EXCLUDED.credits,
+                sort_order  = EXCLUDED.sort_order;
+        RAISE NOTICE 'Set Creation pricing installed.';
+    ELSE
+        RAISE NOTICE 'credit_prices not found - skipping Set Creation pricing. Run the Treasure Chest migration (004) first if you want metered billing.';
+    END IF;
+END $$;
 
 -- ----------------------------------------------------------------------------
 -- Storage: let a signed-in wholesaler upload their own source photos.
