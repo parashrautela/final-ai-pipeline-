@@ -412,10 +412,19 @@ async def spend_credits(
 ) -> dict:
     """Debit a wholesaler's wallet. Returns the RPC's result dict.
 
-    Success:      {"ok": True,  "charged": 10, "balance": 90}
+    Success:      {"ok": True,  "charged": 10, "balance": 90,
+                   "ledger_id": "<debit row>", "created_at": "..."}
     Out of funds: {"ok": False, "error": "INSUFFICIENT_CREDITS",
                    "required": 10, "balance": 4, "short_by": 6}
-    Replay:       {"ok": True,  "replayed": True, ...}
+    Replay:       {"ok": True,  "replayed": True, "ledger_id": ...,
+                   "created_at": ..., "refunded": bool, "superseded": bool}
+                  — only for the same wallet AND the same reference
+                  (migration 006). Anything else is
+                  {"ok": False, "error": "IDEMPOTENCY_CONFLICT"}.
+
+    A ledger that predates migration 006 omits ledger_id/created_at on success
+    and refunded/superseded on replay; callers treat the absence as "unknown"
+    and take the safe branch.
 
     A raised exception here means the ledger is unreachable, which must NOT be
     treated as "free" — callers fail closed.
@@ -439,12 +448,16 @@ async def refund_credits(
     reference_id: str,
     reason: Optional[str] = None,
 ) -> dict:
-    """Give back what a failed job charged.
+    """Give back the LATEST debit on a reference.
 
     Safe to call unconditionally: if nothing was ever debited for this
     reference (free feature, or it failed before the debit landed) the RPC
-    returns `refunded: 0` rather than erroring. Idempotent on the reference,
-    so a retried failure handler cannot pay out twice.
+    returns `refunded: 0` rather than erroring. Idempotent per debit, so a
+    retried failure handler cannot pay out twice.
+
+    Prefer `refund_debit` whenever the charge's ledger id is known: "latest
+    debit on this generation" is only the right debit if nothing else has
+    been charged on it since.
     """
     resp = get_supabase().rpc(
         "refund_credits",
@@ -457,27 +470,63 @@ async def refund_credits(
     return resp.data or {"ok": False, "error": "NO_RESPONSE"}
 
 
+async def refund_debit(ledger_id: str, reason: Optional[str] = None) -> dict:
+    """Give back exactly one debit — the one whose work failed.
+
+    Keyed on the debit row (migration 006), so it is idempotent per debit and
+    can never hand back a different, successful charge on the same generation.
+    """
+    resp = get_supabase().rpc(
+        "refund_debit",
+        {"p_debit_id": ledger_id, "p_reason": reason},
+    ).execute()
+    return resp.data or {"ok": False, "error": "NO_RESPONSE"}
+
+
 async def count_prior_debits(reference_type: str, reference_id: str) -> int:
-    """How many times this reference has already been charged.
+    """How many charges on this reference the wholesaler actually paid for.
 
     This is what distinguishes a first generation from a re-roll. The iOS
     `regenerate` path reuses the SAME `chamak_generations` row, so the row id
     alone cannot tell them apart — but the ledger can, and unlike anything the
     client sends, it cannot be spoofed into claiming the cheaper price.
+
+    A refunded debit does not count: its work failed and the credits went
+    back, so the next attempt is still the first one that was paid for and is
+    priced as a first generation. Counting it made a failed first run's retry
+    a re-roll, undercharging it.
     """
     try:
         resp = (
             get_supabase()
             .table("credit_ledger")
-            .select("id", count="exact")
+            .select("id, kind, idempotency_key, metadata")
             .eq("reference_type", reference_type)
             .eq("reference_id", reference_id)
-            .eq("kind", "debit")
             .execute()
         )
-        return resp.count or 0
     except Exception as exc:
         # Fail toward the CHEAPER price. Miscounting must never let us
         # overcharge somebody for a first-time generation.
         logger.warning(f"count_prior_debits failed for {reference_id}: {exc}")
         return 0
+
+    rows = resp.data or []
+    refunded: set[str] = set()
+    for row in rows:
+        if row.get("kind") not in ("refund", "grant"):
+            continue
+        # Every refund, before and after migration 006, names the debit it
+        # reversed in metadata.refund_of; 006 refunds are also keyed
+        # 'refund:<debit id>'.
+        refund_of = (row.get("metadata") or {}).get("refund_of")
+        if refund_of:
+            refunded.add(str(refund_of))
+        key = row.get("idempotency_key") or ""
+        if key.startswith("refund:"):
+            refunded.add(key.removeprefix("refund:"))
+
+    return sum(
+        1 for row in rows
+        if row.get("kind") == "debit" and str(row.get("id")) not in refunded
+    )

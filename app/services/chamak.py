@@ -12,6 +12,7 @@ from app.config import settings
 from app.db.repository import (
     fetch_chamak_generation,
     refund_credits,
+    refund_debit,
     update_chamak_generation,
 )
 from app.logging import logger
@@ -112,13 +113,27 @@ async def call_openai_vision_analysis(
     }
 
 
-async def _refund_failed_generation(generation_id: str, reason: str) -> None:
+async def _refund_failed_generation(
+    generation_id: str,
+    reason: str,
+    charge: Optional[dict] = None,
+) -> None:
     """Give the credits back when a job dies.
 
-    Called from the failure paths only, and safe to call even when nothing was
-    charged (free feature, or the failure landed before the debit) — the RPC
-    answers `refunded: 0` instead of erroring. It is idempotent on the
-    generation id, so a retried handler cannot pay out twice.
+    `charge` is the `spend_credits` result that paid for THIS job, handed down
+    from the endpoint. With it the refund is exact: that one debit, keyed on
+    its ledger row, idempotent per debit — never "whatever was charged last on
+    this generation", which after a re-roll or a re-analysis is somebody
+    else's successful charge.
+
+    A job that was never billed (a free feature — `charged: 0`) has nothing of
+    its own to give back, so it refunds nothing. Without this, a failed
+    re-analysis of an already-generated row refunded the generation it
+    followed: a free output on demand.
+
+    Called without a charge (older callers, or a ledger that predates
+    migration 006 and returns no ledger id) it falls back to the latest debit
+    on the generation, as before.
 
     Refunds are deliberately visible in the wholesaler's history rather than
     handled as an invisible hold: "Refunded — generation failed" earns more
@@ -130,11 +145,20 @@ async def _refund_failed_generation(generation_id: str, reason: str) -> None:
     """
     if not settings.CREDITS_ENABLED:
         return
+    if charge is not None and not charge.get("charged"):
+        return
     try:
-        result = await refund_credits("chamak_generation", generation_id, reason)
-        if result.get("refunded"):
+        ledger_id = (charge or {}).get("ledger_id")
+        if ledger_id:
+            result = await refund_debit(ledger_id, reason)
+        else:
+            result = await refund_credits("chamak_generation", generation_id, reason)
+        amount = result.get("refunded")
+        if amount is None and not result.get("replayed"):
+            amount = result.get("granted")  # a ledger that predates migration 006
+        if amount:
             logger.info(
-                f"Refunded {result.get('granted') or result.get('refunded')} credits for {generation_id}",
+                f"Refunded {amount} credits for {generation_id}",
                 extra={"generation_id": generation_id, "reason": reason},
             )
     except Exception:
@@ -150,7 +174,9 @@ async def _refund_failed_generation(generation_id: str, reason: str) -> None:
             )
 
 
-async def run_stage1_vision_analysis(generation_id: str) -> None:
+async def run_stage1_vision_analysis(
+    generation_id: str, charge: Optional[dict] = None
+) -> None:
     """Stage 1: Vision Analysis for Chamak AI Fusion."""
     try:
         logger.info(f"Starting Chamak Stage 1 vision analysis for {generation_id}")
@@ -194,7 +220,7 @@ async def run_stage1_vision_analysis(generation_id: str) -> None:
             # Rejecting the images is our call, not a mistake they made, so we
             # do not keep their credits for it.
             await _refund_failed_generation(
-                generation_id, f"Content check failed: {content_flag}"
+                generation_id, f"Content check failed: {content_flag}", charge
             )
         logger.info(
             f"Chamak Stage 1 completed for {generation_id} -> status={status}, flag={content_flag}"
@@ -214,7 +240,7 @@ async def run_stage1_vision_analysis(generation_id: str) -> None:
         except Exception:
             logger.error(f"Failed to persist failure status for {generation_id}", exc_info=True)
 
-        await _refund_failed_generation(generation_id, "Analysis failed")
+        await _refund_failed_generation(generation_id, "Analysis failed", charge)
 
 
 def compile_chamak_prompt(
@@ -315,7 +341,9 @@ def compile_chamak_prompt(
     return compiled_prompt
 
 
-async def run_stage4_generation(generation_id: str) -> None:
+async def run_stage4_generation(
+    generation_id: str, charge: Optional[dict] = None
+) -> None:
     """Stage 4: Image Generation & Output Storage for Chamak AI Fusion."""
     try:
         logger.info(f"Starting Chamak Stage 4 generation for {generation_id}")
@@ -392,10 +420,12 @@ async def run_stage4_generation(generation_id: str) -> None:
         except Exception:
             logger.error(f"Failed to persist failure status for {generation_id}", exc_info=True)
 
-        await _refund_failed_generation(generation_id, "Generation failed")
+        await _refund_failed_generation(generation_id, "Generation failed", charge)
 
 
-async def run_stage4_generation_openai(generation_id: str) -> None:
+async def run_stage4_generation_openai(
+    generation_id: str, charge: Optional[dict] = None
+) -> None:
     """Stage 4 for Chamak 2.0 — same fusion, rendered by OpenAI instead.
 
     A deliberate near-copy of `run_stage4_generation`. Every step that is not
@@ -496,7 +526,7 @@ async def run_stage4_generation_openai(generation_id: str) -> None:
         except Exception:
             logger.error(f"Failed to persist failure status for {generation_id}", exc_info=True)
 
-        await _refund_failed_generation(generation_id, "Generation failed")
+        await _refund_failed_generation(generation_id, "Generation failed", charge)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -616,7 +646,9 @@ def build_set_creation_prompt(
     return "\n".join(sections)
 
 
-async def run_set_creation_generation(generation_id: str) -> None:
+async def run_set_creation_generation(
+    generation_id: str, charge: Optional[dict] = None
+) -> None:
     """Generate one matched-set photograph from the row's two source images."""
     try:
         logger.info(f"Starting Set Creation generation for {generation_id}")
@@ -698,4 +730,4 @@ async def run_set_creation_generation(generation_id: str) -> None:
                 f"Failed to persist failure status for {generation_id}", exc_info=True
             )
 
-        await _refund_failed_generation(generation_id, "Set creation failed")
+        await _refund_failed_generation(generation_id, "Set creation failed", charge)

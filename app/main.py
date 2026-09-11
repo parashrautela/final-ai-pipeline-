@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 from contextlib import asynccontextmanager
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Awaitable, Callable, Optional
 
 # pyrefly: ignore [missing-import]
 import sentry_sdk
@@ -37,6 +39,7 @@ from app.db.repository import (
 )
 from app.logging import logger
 from app.services.chamak import (
+    _refund_failed_generation,
     run_set_creation_generation,
     run_stage1_vision_analysis,
     run_stage4_generation,
@@ -143,6 +146,51 @@ async def ensure_cors_headers(request, call_next):
 # Credit gate
 # ─────────────────────────────────────────────────────────────────────────────
 
+# A client key longer than this is hashed before it reaches the ledger, so an
+# oversized header can never trip the UNIQUE index (which would surface as a
+# 503 rather than a charge).
+_MAX_CLIENT_KEY_LEN = 128
+
+# How many times one request may be retried after its charge was refunded
+# (its work failed). Each retry is a new, fully billed attempt; the cap only
+# stops a client that loops forever from walking an endless key chain.
+_MAX_RETRIES_AFTER_REFUND = 5
+
+
+def _ledger_key(
+    *,
+    user_id: str,
+    feature_key: str,
+    generation_id: str,
+    idempotency_key: Optional[str],
+) -> str:
+    """The idempotency key the ledger stores for this charge.
+
+    A client's Idempotency-Key means "this user's request on this generation",
+    nothing more. Stored verbatim it was a master key: once one charge existed
+    under it, replaying the same header on ANY other generation came back
+    `replayed: true` and ran that generation for free — unlimited times.
+    Namespacing it server-side makes the same header on another generation, or
+    from another account, simply a different key — so it gets charged.
+    """
+    client_key = (idempotency_key or "").strip()
+    if client_key:
+        if len(client_key) > _MAX_CLIENT_KEY_LEN:
+            client_key = "sha256:" + hashlib.sha256(client_key.encode()).hexdigest()
+        return f"{user_id}:{generation_id}:{client_key}"
+
+    # Fallback for clients that predate the header. Keyed on the row, so a
+    # double-tap still charges once. A replay of this key never starts new work
+    # (see `_charge_or_reject`), so re-rolls past the first one are refused
+    # rather than run for free until the client sends the header.
+    logger.warning(
+        "No Idempotency-Key header — falling back to a row-derived key. "
+        "Re-rolls on this generation past the first will not run.",
+        extra={"generation_id": generation_id, "feature_key": feature_key},
+    )
+    return f"chamak:{feature_key}:{generation_id}"
+
+
 async def _charge_or_reject(
     *,
     user_id: Optional[str],
@@ -153,7 +201,15 @@ async def _charge_or_reject(
 ) -> Optional[dict]:
     """Debit before any work starts, or refuse the request.
 
-    Returns the RPC result, or None when metering is switched off.
+    Returns the RPC result, or None when metering is switched off. A result
+    with `replayed: true` means this request was already paid for and its work
+    already started: the caller must NOT start it again (`_is_replay`).
+
+    One exception to "a replay starts nothing": if that earlier charge was
+    refunded — its work failed and the credits went back — the retry is a new
+    attempt and is billed as one, under a key derived from the original so a
+    double-tap of the retry still charges once. That is what lets a client
+    that keeps its key until success (iOS does) retry a failed generation.
 
     Fails CLOSED. If the ledger is unreachable we return 503 rather than
     letting the job through — the old upload-quota check failed open, which is
@@ -162,42 +218,65 @@ async def _charge_or_reject(
     if not settings.CREDITS_ENABLED or user_id is None:
         return None
 
-    if idempotency_key:
-        key = idempotency_key
-    else:
-        # Fallback for clients that predate the header. Deliberately biased
-        # toward UNDER-charging: keyed on the row alone, so a network retry can
-        # never double-charge — at the cost of re-rolls past the first being
-        # free until both clients send the header.
-        key = f"chamak:{feature_key}:{generation_id}"
-        logger.warning(
-            "No Idempotency-Key header — falling back to a row-derived key. "
-            "Re-rolls on this generation will not be charged.",
-            extra={"generation_id": generation_id, "feature_key": feature_key},
-        )
+    base_key = _ledger_key(
+        user_id=user_id,
+        feature_key=feature_key,
+        generation_id=generation_id,
+        idempotency_key=idempotency_key,
+    )
 
-    try:
-        result = await spend_credits(
-            user_id=user_id,
-            feature_key=feature_key,
-            idempotency_key=key,
-            reference_type="chamak_generation",
-            reference_id=generation_id,
-            metadata=metadata or {},
+    result: dict = {}
+    for attempt in range(_MAX_RETRIES_AFTER_REFUND + 1):
+        key = base_key if attempt == 0 else f"{base_key}:after-refund:{attempt}"
+        try:
+            result = await spend_credits(
+                user_id=user_id,
+                feature_key=feature_key,
+                idempotency_key=key,
+                reference_type="chamak_generation",
+                reference_id=generation_id,
+                metadata=metadata or {},
+            )
+        except Exception as exc:
+            logger.error(
+                f"Credit ledger unreachable for {generation_id}: {exc}",
+                extra={"generation_id": generation_id},
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Could not reach your Treasure Chest just now. Please try again.",
+            ) from exc
+
+        if not (result.get("ok") and result.get("replayed") and result.get("refunded")):
+            break
+        logger.info(
+            "Retry of a refunded charge — billing it as a new attempt",
+            extra={"generation_id": generation_id, "attempt": attempt + 1},
         )
-    except Exception as exc:
-        logger.error(
-            f"Credit ledger unreachable for {generation_id}: {exc}",
-            extra={"generation_id": generation_id},
-            exc_info=True,
-        )
+    else:
         raise HTTPException(
-            status_code=503,
-            detail="Could not reach your Treasure Chest just now. Please try again.",
-        ) from exc
+            status_code=409,
+            detail="This request has already failed several times. Please start a new one.",
+        )
 
     if result.get("ok"):
         return result
+
+    if result.get("error") == "IDEMPOTENCY_CONFLICT":
+        # The ledger holds this key for a different wallet or a different
+        # generation. Never a replay, never free.
+        logger.warning(
+            f"Idempotency-Key conflict on {generation_id}",
+            extra={"generation_id": generation_id, "feature_key": feature_key},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "IDEMPOTENCY_CONFLICT",
+                "message": "This request key was already used for something else.",
+            },
+        )
 
     if result.get("error") == "INSUFFICIENT_CREDITS":
         # 402 so the app can tell "you are out of credits" apart from every
@@ -218,6 +297,100 @@ async def _charge_or_reject(
         extra={"generation_id": generation_id},
     )
     raise HTTPException(status_code=500, detail="Could not process credits for this action.")
+
+
+def _is_replay(charge: Optional[dict]) -> bool:
+    """The charge already existed: this request is a retry of one we took."""
+    return bool(charge and charge.get("replayed"))
+
+
+def _parse_timestamp(value: object) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _charge_already_delivered(row: dict, charge: dict) -> bool:
+    """Did the job this (latest) charge paid for finish with an output?"""
+    if charge.get("superseded") or not row.get("output_image_url"):
+        return False
+    charged_at = _parse_timestamp(charge.get("created_at"))
+    completed_at = _parse_timestamp(row.get("completed_at"))
+    return bool(charged_at and completed_at and completed_at >= charged_at)
+
+
+async def _replayed_charge_response(
+    generation_id: str,
+    charge: dict,
+    message: str,
+    *,
+    restore_done: bool = True,
+) -> dict:
+    """Answer a retry of an already-paid request WITHOUT starting new work.
+
+    The job this charge paid for was queued by the original request. Starting
+    another one here — on this generation or any other — would be a fresh
+    output billed zero times, which is the free-generation hole this closes.
+    Instead, report where that job has got to, in the same shape as the
+    original 202, so a client that retried simply carries on polling.
+
+    `restore_done`: iOS and web both write `status: generating` to the row
+    themselves before calling us. If the paid job had already finished, that
+    write hides the finished result and the client would poll a job that is
+    never coming. When the ledger and the row agree the job completed after
+    this charge, put `done` back.
+    """
+    row = await fetch_chamak_generation(generation_id) or {}
+    status = row.get("status") or "generating"
+
+    if restore_done and status != "done" and _charge_already_delivered(row, charge):
+        try:
+            await update_chamak_generation(generation_id, {"status": "done"})
+            status = "done"
+        except Exception:
+            logger.warning(
+                "Could not restore 'done' after a replayed charge",
+                extra={"generation_id": generation_id},
+                exc_info=True,
+            )
+
+    logger.info(
+        "Replayed charge — no new work started",
+        extra={"generation_id": generation_id, "status": status},
+    )
+    return {
+        "message": message,
+        "generation_id": generation_id,
+        "status": status,
+        "replayed": True,
+    }
+
+
+async def _start_job(
+    background_tasks: BackgroundTasks,
+    generation_id: str,
+    charge: Optional[dict],
+    job: Callable[..., Awaitable[None]],
+    *,
+    status: str,
+) -> None:
+    """Mark the row and queue the job that `charge` paid for.
+
+    The charge travels with the job so a failure refunds exactly that debit.
+    If the row cannot be marked, the credits go back before the error does:
+    the client's retry then finds a refunded charge and bills a fresh attempt,
+    instead of a live charge whose job never started.
+    """
+    try:
+        await update_chamak_generation(generation_id, {"status": status})
+    except Exception:
+        await _refund_failed_generation(generation_id, "Could not start the job", charge)
+        raise
+    background_tasks.add_task(job, generation_id, charge)
 
 
 @app.get("/health")
@@ -431,16 +604,24 @@ async def chamak_analyze(
         )
     require_ownership(row, user_id)
 
-    await _charge_or_reject(
+    charge = await _charge_or_reject(
         user_id=user_id,
         feature_key="chamak.analyze",
         generation_id=generation_id,
         idempotency_key=idempotency_key,
         metadata={"ai_cost_paise": settings.COST_PAISE_VISION_ANALYSIS},
     )
+    # Analysis is free today, so it is never a replay — but the day it is
+    # priced, a retried paid analysis must not run twice either.
+    if _is_replay(charge):
+        return await _replayed_charge_response(
+            generation_id, charge, "Chamak vision analysis queued.", restore_done=False
+        )
 
-    await update_chamak_generation(generation_id, {"status": "analyzing"})
-    background_tasks.add_task(run_stage1_vision_analysis, generation_id)
+    await _start_job(
+        background_tasks, generation_id, charge, run_stage1_vision_analysis,
+        status="analyzing",
+    )
     logger.info("Chamak vision analysis enqueued", extra={"generation_id": generation_id})
 
     return {
@@ -478,10 +659,14 @@ async def chamak_generate(
     # `regenerate` path reuses the SAME row, so the id cannot distinguish the
     # two — but the ledger can. Deriving it server-side means a client cannot
     # simply claim the cheaper price.
+    #
+    # A retry of the SAME request (same Idempotency-Key) also sees prior > 0,
+    # so it asks for the re-roll price — but it never reaches a new debit: the
+    # ledger answers `replayed` and no new job starts.
     prior = await count_prior_debits("chamak_generation", generation_id)
     feature_key = "chamak.reroll" if prior > 0 else "chamak.generate"
 
-    await _charge_or_reject(
+    charge = await _charge_or_reject(
         user_id=user_id,
         feature_key=feature_key,
         generation_id=generation_id,
@@ -491,9 +676,15 @@ async def chamak_generate(
             "attempt": prior + 1,
         },
     )
+    if _is_replay(charge):
+        return await _replayed_charge_response(
+            generation_id, charge, "Chamak image generation queued."
+        )
 
-    await update_chamak_generation(generation_id, {"status": "generating"})
-    background_tasks.add_task(run_stage4_generation, generation_id)
+    await _start_job(
+        background_tasks, generation_id, charge, run_stage4_generation,
+        status="generating",
+    )
     logger.info("Chamak image generation enqueued", extra={"generation_id": generation_id})
 
     return {
@@ -538,7 +729,7 @@ async def chamak_generate_v2(
     prior = await count_prior_debits("chamak_generation", generation_id)
     feature_key = "chamak.reroll" if prior > 0 else "chamak.generate"
 
-    await _charge_or_reject(
+    charge = await _charge_or_reject(
         user_id=user_id,
         feature_key=feature_key,
         generation_id=generation_id,
@@ -549,9 +740,15 @@ async def chamak_generate_v2(
             "pipeline": "chamak_openai",
         },
     )
+    if _is_replay(charge):
+        return await _replayed_charge_response(
+            generation_id, charge, "Chamak 2.0 image generation queued."
+        )
 
-    await update_chamak_generation(generation_id, {"status": "generating"})
-    background_tasks.add_task(run_stage4_generation_openai, generation_id)
+    await _start_job(
+        background_tasks, generation_id, charge, run_stage4_generation_openai,
+        status="generating",
+    )
     logger.info(
         "Chamak 2.0 (OpenAI) image generation enqueued",
         extra={"generation_id": generation_id},
@@ -614,7 +811,7 @@ async def set_creation_generate(
     prior = await count_prior_debits("chamak_generation", generation_id)
     feature_key = "chamak.reroll" if prior > 0 else "chamak.set_creation"
 
-    await _charge_or_reject(
+    charge = await _charge_or_reject(
         user_id=user_id,
         feature_key=feature_key,
         generation_id=generation_id,
@@ -626,9 +823,13 @@ async def set_creation_generate(
             "backdrop": row.get("set_backdrop"),
         },
     )
+    if _is_replay(charge):
+        return await _replayed_charge_response(generation_id, charge, "Set creation queued.")
 
-    await update_chamak_generation(generation_id, {"status": "generating"})
-    background_tasks.add_task(run_set_creation_generation, generation_id)
+    await _start_job(
+        background_tasks, generation_id, charge, run_set_creation_generation,
+        status="generating",
+    )
     logger.info(
         "Set Creation generation enqueued", extra={"generation_id": generation_id}
     )
