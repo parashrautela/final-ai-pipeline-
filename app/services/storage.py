@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import NamedTuple
 from urllib.parse import urlparse
 
 import httpx
@@ -7,6 +8,12 @@ import httpx
 from app.config import settings
 from app.db.repository import get_supabase
 from app.logging import logger
+from app.services.derivatives import CACHE_SECONDS, WEBP_CONTENT_TYPE, build_variants
+
+#: Originals are overwritten in place when a product is re-processed, so they
+#: are cached for a day rather than forever. The variants next to them carry a
+#: hash in the name and are cached for a year (CACHE_SECONDS).
+CACHE_SECONDS_DEFAULT = "86400"
 
 
 def _ensure_bucket(bucket_name: str, *, public: bool = True) -> None:
@@ -21,10 +28,23 @@ def _ensure_bucket(bucket_name: str, *, public: bool = True) -> None:
         logger.warning(f"Could not verify/create bucket '{bucket_name}': {exc}")
 
 
-def upload_chamak_output(file_content: bytes, wholesaler_id: str, generation_id: str) -> str:
+class StoredImage(NamedTuple):
+    """Where an image ended up, and the small copies stored next to it.
+
+    `url` is a public URL for a public bucket and a bucket-relative path for a
+    private one. `variants` is `{"card"|"detail"|"full": url or path}`, and is
+    empty when they could not be made — callers then fall back to the original.
+    """
+
+    url: str
+    variants: dict[str, str]
+
+
+def upload_chamak_output(file_content: bytes, wholesaler_id: str, generation_id: str) -> StoredImage:
     """Upload generated Chamak output image to private bucket chamak-outputs.
 
-    Returns the relative path inside the bucket: '{wholesaler_id}/{generation_id}.png'
+    Returns the relative path inside the bucket
+    ('{wholesaler_id}/{generation_id}.png') and the paths of its variants.
     """
     bucket = settings.CHAMAK_OUTPUT_BUCKET
     path = f"{wholesaler_id}/{generation_id}.png"
@@ -34,13 +54,17 @@ def upload_chamak_output(file_content: bytes, wholesaler_id: str, generation_id:
         sb.storage.from_(bucket).upload(
             path=path,
             file=file_content,
-            file_options={"content-type": "image/png", "upsert": "true"},
+            file_options={
+                "content-type": "image/png",
+                "upsert": "true",
+                "cache-control": CACHE_SECONDS_DEFAULT,
+            },
         )
         logger.info(
             f"Uploaded chamak output to private bucket: {bucket}/{path}",
             extra={"wholesaler_id": wholesaler_id, "generation_id": generation_id},
         )
-        return path
+        return StoredImage(path, upload_variants(file_content, bucket, path))
     except Exception as exc:
         logger.error(
             f"Failed to upload chamak output {bucket}/{path}: {exc}",
@@ -151,8 +175,25 @@ def resolve_product_image(product: dict) -> bytes:
     return download_from_storage(settings.RAW_BUCKET_NAME, fallback_path)
 
 
-def upload_file_to_storage(content: bytes, bucket: str, path: str, content_type: str = "image/png") -> str:
-    """Upload bytes to bucket and return public URL."""
+def public_url_for(bucket: str, path: str) -> str:
+    """The public URL of a stored object. The SDK doesn't return one on upload."""
+    return f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}"
+
+
+def upload_file_to_storage(
+    content: bytes,
+    bucket: str,
+    path: str,
+    content_type: str = "image/png",
+    cache_seconds: str = CACHE_SECONDS_DEFAULT,
+) -> str:
+    """Upload bytes to bucket and return public URL.
+
+    `cache_seconds` is seconds, not a header — storage3 turns it into
+    `cache-control: max-age=N`. Without it Supabase answers `no-cache`, so
+    Cloudflare re-fetches every image from origin and phones keep nothing:
+    that alone made every catalogue scroll re-download megabytes.
+    """
     try:
         _ensure_bucket(bucket)
         sb = get_supabase()
@@ -161,10 +202,13 @@ def upload_file_to_storage(content: bytes, bucket: str, path: str, content_type:
         sb.storage.from_(bucket).upload(
             path=path,
             file=content,
-            file_options={"content-type": content_type, "x-upsert": "true"},
+            file_options={
+                "content-type": content_type,
+                "x-upsert": "true",
+                "cache-control": cache_seconds,
+            },
         )
-        # Construct the public URL manually — the SDK doesn't return it on upload.
-        public_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/{bucket}/{path}"
+        public_url = public_url_for(bucket, path)
         logger.info(f"Uploaded to storage: {public_url}")
         return public_url
     except Exception as exc:
@@ -172,26 +216,71 @@ def upload_file_to_storage(content: bytes, bucket: str, path: str, content_type:
         raise
 
 
-def upload_processed_image(file_content: bytes, product_id: str) -> str:
-    """Upload processed image to storage."""
-    return upload_file_to_storage(
-        file_content,
-        settings.PROCESSED_BUCKET_NAME,
-        f"{settings.PROCESSED_STORAGE_FOLDER}/{product_id}.png",
-        content_type="image/png",
-    )
+def upload_variants(original: bytes, bucket: str, original_path: str) -> dict[str, str]:
+    """Write the card/detail/full copies of an image next to the original.
+
+    Returns `{variant name: public URL}` for a public bucket, or
+    `{variant name: storage path}` for a private one (the apps sign those
+    themselves). Returns `{}` if the image can't be read or a copy can't be
+    stored: a missing thumbnail must never fail the upload that produced it,
+    because the apps fall back to the original.
+    """
+    is_public = bucket != settings.CHAMAK_OUTPUT_BUCKET
+    try:
+        variants = build_variants(original, original_path)
+    except Exception as exc:
+        logger.warning(f"Could not build image variants for {bucket}/{original_path}: {exc}")
+        return {}
+
+    out: dict[str, str] = {}
+    for variant in variants:
+        try:
+            _ensure_bucket(bucket, public=is_public)
+            get_supabase().storage.from_(bucket).upload(
+                path=variant.path,
+                file=variant.content,
+                file_options={
+                    "content-type": WEBP_CONTENT_TYPE,
+                    "x-upsert": "true",
+                    # Safe to cache forever: the name contains a hash of the
+                    # bytes, so different pixels always mean a different path.
+                    "cache-control": CACHE_SECONDS,
+                },
+            )
+            out[variant.name] = public_url_for(bucket, variant.path) if is_public else variant.path
+        except Exception as exc:
+            logger.warning(f"Could not upload {variant.name} variant {bucket}/{variant.path}: {exc}")
+    if out:
+        logger.info(
+            f"Wrote {len(out)} image variant(s) for {bucket}/{original_path}",
+            extra={"variants": list(out)},
+        )
+    return out
 
 
-def upload_processed_image_variant(file_content: bytes, product_id: str, variant_index: int) -> str:
-    """Upload one of the 4 generated image variants."""
-    path = f"{settings.PROCESSED_STORAGE_FOLDER}/{product_id}_v{variant_index}.png"
-    logger.info(f"Uploading variant {variant_index}/4: {path}", extra={"product_id": product_id})
-    return upload_file_to_storage(
+def upload_processed_image(file_content: bytes, product_id: str) -> StoredImage:
+    """Upload processed image to storage, with its card/detail/full copies."""
+    path = f"{settings.PROCESSED_STORAGE_FOLDER}/{product_id}.png"
+    url = upload_file_to_storage(
         file_content,
         settings.PROCESSED_BUCKET_NAME,
         path,
         content_type="image/png",
     )
+    return StoredImage(url, upload_variants(file_content, settings.PROCESSED_BUCKET_NAME, path))
+
+
+def upload_processed_image_variant(file_content: bytes, product_id: str, variant_index: int) -> StoredImage:
+    """Upload one of the 4 generated image variants, with its smaller copies."""
+    path = f"{settings.PROCESSED_STORAGE_FOLDER}/{product_id}_v{variant_index}.png"
+    logger.info(f"Uploading variant {variant_index}/4: {path}", extra={"product_id": product_id})
+    url = upload_file_to_storage(
+        file_content,
+        settings.PROCESSED_BUCKET_NAME,
+        path,
+        content_type="image/png",
+    )
+    return StoredImage(url, upload_variants(file_content, settings.PROCESSED_BUCKET_NAME, path))
 
 
 def upload_raw_image(file_content: bytes, product_id: str, content_type: str = "image/jpeg") -> str:

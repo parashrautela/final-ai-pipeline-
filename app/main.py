@@ -45,6 +45,7 @@ from app.services.chamak import (
     run_stage4_generation,
     run_stage4_generation_openai,
 )
+from app.services.backfill import backfill_on_startup
 from app.services.pipeline import process_product_image
 from app.services.storage import upload_raw_image
 from app.validation import (
@@ -88,8 +89,12 @@ async def lifespan(app: FastAPI):
     # Start the background worker as soon as the server is ready.
     # On shutdown, cancel it cleanly instead of letting it hang.
     task = asyncio.create_task(worker_loop())
+    # One-off catch-up for images stored before they had small copies. Costs a
+    # single query once everything has been converted.
+    catch_up = asyncio.create_task(backfill_on_startup())
     yield
     task.cancel()
+    catch_up.cancel()
     try:
         await task
     except asyncio.CancelledError:

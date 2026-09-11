@@ -378,11 +378,12 @@ async def run_stage4_generation(
         )
 
         # Upload to Supabase Storage private bucket 'chamak-outputs' at '{wholesaler_id}/{generation_id}.png'
-        output_storage_path = upload_chamak_output(
+        stored_output = upload_chamak_output(
             file_content=generated_bytes,
             wholesaler_id=wholesaler_id,
             generation_id=generation_id,
         )
+        output_storage_path = stored_output.url
 
         completed_at = datetime.now(timezone.utc).isoformat()
 
@@ -393,6 +394,9 @@ async def run_stage4_generation(
                 "compiled_prompt_text": compiled_prompt,
                 "prompt_version": settings.CHAMAK_PROMPT_VERSION,
                 "output_image_url": output_storage_path,
+                # Paths in the same private bucket: the app signs whichever
+                # size it needs instead of the multi-megabyte original.
+                "output_variants": stored_output.variants or None,
                 "status": "done",
                 "completed_at": completed_at,
             },
@@ -485,11 +489,12 @@ async def run_stage4_generation_openai(
             prompt=compiled_prompt,
         )
 
-        output_storage_path = upload_chamak_output(
+        stored_output = upload_chamak_output(
             file_content=generated_bytes,
             wholesaler_id=wholesaler_id,
             generation_id=generation_id,
         )
+        output_storage_path = stored_output.url
 
         completed_at = datetime.now(timezone.utc).isoformat()
 
@@ -499,6 +504,7 @@ async def run_stage4_generation_openai(
                 "compiled_prompt_text": compiled_prompt,
                 "prompt_version": settings.CHAMAK_OPENAI_PROMPT_VERSION,
                 "output_image_url": output_storage_path,
+                "output_variants": stored_output.variants or None,
                 "status": "done",
                 "completed_at": completed_at,
             },
@@ -690,11 +696,12 @@ async def run_set_creation_generation(
             image_size="3:4",
         )
 
-        output_storage_path = upload_chamak_output(
+        stored_output = upload_chamak_output(
             file_content=generated_bytes,
             wholesaler_id=wholesaler_id,
             generation_id=generation_id,
         )
+        output_storage_path = stored_output.url
 
         await update_chamak_generation(
             generation_id,
@@ -702,6 +709,7 @@ async def run_set_creation_generation(
                 "compiled_prompt_text": compiled_prompt,
                 "prompt_version": settings.CHAMAK_PROMPT_VERSION,
                 "output_image_url": output_storage_path,
+                "output_variants": stored_output.variants or None,
                 "status": "done",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             },

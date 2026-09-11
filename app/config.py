@@ -183,6 +183,12 @@ class Settings(BaseSettings):
             + self.COST_PAISE_IMAGE_GENERATION * self.variant_count
         )
 
+    # Images stored before app/services/derivatives.py existed have no small
+    # copies, so the apps still download the full-size original for them. When
+    # true, the server converts those in the background shortly after start and
+    # stops once there are none left. Set false to switch that off.
+    IMAGE_VARIANT_BACKFILL: bool = True
+
     # Storage
     RAW_BUCKET_NAME: str = "plant-images"
     RAW_STORAGE_FOLDER: str = "products"

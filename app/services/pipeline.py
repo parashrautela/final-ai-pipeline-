@@ -15,6 +15,7 @@ from app.logging import logger
 from app.services.ai import nanobana_client
 from app.services.prompt_composer import prompt_composer
 from app.services.storage import (
+    StoredImage,
     download_image,
     upload_processed_image,
     upload_processed_image_variant,
@@ -51,7 +52,7 @@ async def _generate_variant(
     base_version: int,
     category_version: int,
     wholesaler_id: Optional[str] = None,
-) -> Optional[str]:
+) -> Optional[StoredImage]:
     """Run single Nanobana generation + upload for one variant, with full audit logging."""
     log_id = await log_ai_generation_start(
         product_id=product_id,
@@ -71,15 +72,15 @@ async def _generate_variant(
         image_bytes = await nanobana_client.enhance_image(input_image_url, prompt=prompt)
 
         # Upload runs in a thread because the Supabase storage SDK is synchronous.
-        public_url = await asyncio.to_thread(
+        stored = await asyncio.to_thread(
             upload_processed_image_variant, image_bytes, product_id, variant_index
         )
 
         if log_id:
             await log_ai_generation_complete(log_id, status="success")
 
-        logger.info(f"Variant {variant_index} — done: {public_url}", extra={"product_id": product_id})
-        return public_url
+        logger.info(f"Variant {variant_index} — done: {stored.url}", extra={"product_id": product_id})
+        return stored
 
     except Exception as exc:
         if log_id:
@@ -156,15 +157,22 @@ async def process_product_image(product: dict) -> list[str]:
     )
 
     # Filter out any None values from variants that failed.
-    successful_urls = [url for url in results if url is not None]
+    stored_images = [stored for stored in results if stored is not None]
+    successful_urls = [stored.url for stored in stored_images]
 
     if not successful_urls:
         raise RuntimeError(f"All {variant_count} variant(s) failed for product {product_id}")
 
     logger.info(f"{len(successful_urls)}/{variant_count} variants generated", extra={"product_id": product_id})
 
-    # Persist to database
-    await update_product_generated_images(product_id, successful_urls, update_image_url=True)
+    # Persist to database. The small copies go in the same update as the URLs
+    # they belong to, so the row is never half-described.
+    await update_product_generated_images(
+        product_id,
+        successful_urls,
+        update_image_url=True,
+        image_variants={s.url: s.variants for s in stored_images if s.variants},
+    )
 
     elapsed_ms = int((time.time() - start) * 1000)
     logger.info(f"Pipeline complete in {elapsed_ms}ms", extra={"product_id": product_id})
@@ -208,7 +216,7 @@ async def process_job(job: dict) -> None:
         final_image = await nanobana_client.enhance_image(raw_url, prompt=final_prompt)
 
         logger.info("Uploading processed image", extra={"job_id": job_id})
-        processed_url = upload_processed_image(final_image, job_id)
+        processed_url = upload_processed_image(final_image, job_id).url
 
         if log_id:
             await log_ai_generation_complete(log_id, status="success")

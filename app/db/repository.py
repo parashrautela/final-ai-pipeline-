@@ -222,8 +222,15 @@ async def update_product_generated_images(
     generated_urls: list[str],
     *,
     update_image_url: bool = True,
+    image_variants: Optional[dict[str, dict[str, str]]] = None,
 ) -> None:
-    """Persist the generated image variant URLs for a product."""
+    """Persist the generated image variant URLs for a product.
+
+    `image_variants` maps each of those URLs to its card/detail/full copies —
+    what lets the apps fetch a 41 KB thumbnail instead of the 3 MB original.
+    The column arrives in migration 010; if it isn't there yet the update is
+    retried without it, so an un-migrated database still works.
+    """
     if not generated_urls:
         logger.warning("update_product_generated_images called with empty list — skipping", extra={"product_id": product_id})
         return
@@ -231,9 +238,23 @@ async def update_product_generated_images(
     payload: dict = {"generated_image_urls": generated_urls}
     if update_image_url:
         payload["image_url"] = generated_urls[0]
+    if image_variants:
+        payload["image_variants"] = image_variants
 
     try:
-        resp = get_supabase().table(_TABLE).update(payload).eq("id", product_id).execute()
+        try:
+            get_supabase().table(_TABLE).update(payload).eq("id", product_id).execute()
+        except APIError as exc:
+            if exc.code != "PGRST204" or "image_variants" not in payload:
+                raise
+            logger.warning(
+                f"'{_TABLE}' has no image_variants column yet (migration 010) — "
+                "storing the URLs without it",
+                extra={"product_id": product_id},
+            )
+            payload.pop("image_variants")
+            get_supabase().table(_TABLE).update(payload).eq("id", product_id).execute()
+
         logger.info(
             f"Stored {len(generated_urls)} generated image URL(s)",
             extra={"product_id": product_id, "variant_count": len(generated_urls)},
@@ -270,15 +291,33 @@ async def fetch_chamak_generation(generation_id: str) -> Optional[dict]:
 
 
 async def update_chamak_generation(generation_id: str, updates: dict) -> Optional[dict]:
-    """Apply updates to a chamak_generations row and return updated record."""
-    try:
-        resp = (
+    """Apply updates to a chamak_generations row and return updated record.
+
+    `output_variants` (migration 010) is dropped and the update retried if the
+    column isn't there: by this point the image is generated and the credits
+    are spent, so a missing thumbnail column must not lose the result.
+    """
+    def _apply(payload: dict):
+        return (
             get_supabase()
             .table(settings.CHAMAK_TABLE_NAME)
-            .update(updates)
+            .update(payload)
             .eq("id", generation_id)
             .execute()
         )
+
+    try:
+        try:
+            resp = _apply(updates)
+        except APIError as exc:
+            if exc.code != "PGRST204" or "output_variants" not in updates:
+                raise
+            logger.warning(
+                f"'{settings.CHAMAK_TABLE_NAME}' has no output_variants column yet "
+                "(migration 010) — saving the generation without it",
+                extra={"generation_id": generation_id},
+            )
+            resp = _apply({k: v for k, v in updates.items() if k != "output_variants"})
         if resp.data:
             logger.info(
                 "Updated chamak_generation",
