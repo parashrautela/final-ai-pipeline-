@@ -615,6 +615,57 @@ def build_set_creation_prompt(
         "- If a piece is a pair of earrings, show both earrings, identical to "
         "each other and identical to the photo.",
         "",
+        "IMAGE QUALITY AND DETAIL FIDELITY:",
+        "- Generate the image at the highest possible photorealistic quality and "
+        "resolution.",
+        "- The jewelry must be extremely sharp and crisp, with no blur, softness, "
+        "pixelation, compression artifacts or loss of fine detail.",
+        "- Preserve every small jewelry detail that is visible in the reference "
+        "images, including fine chains, links, clasps, hooks, settings, prongs, "
+        "bead shapes, pearl surfaces, stone cuts, engravings, textures and metal "
+        "finishing.",
+        "- Fine details must remain clearly visible when the final image is "
+        "viewed at high resolution or zoomed in.",
+        "- Do NOT generate artificial detail that does not exist in the reference. "
+        "Preserve the actual detail rather than inventing or smoothing it.",
+        "- Do NOT oversoften, blur, denoise or excessively smooth the jewelry.",
+        "- Maintain clean and clearly defined edges around every jewelry element.",
+        "- Metal surfaces must retain realistic micro-texture and reflections "
+        "without becoming overly glossy, plastic-looking or artificially smooth.",
+        "- Gemstones must retain their exact visible shape, cut, colour, placement, "
+        "transparency and reflective characteristics from the reference images.",
+        "",
+        "DESIGN FIDELITY:",
+        "- The original jewelry design has absolute priority over aesthetics.",
+        "- Do NOT alter the proportions, geometry, thickness, curvature, spacing, "
+        "stone placement or construction of either piece.",
+        "- Do NOT make the jewelry look more expensive, more elaborate, cleaner, "
+        "larger or more symmetrical than the actual reference.",
+        "- Preserve intentional irregularities, asymmetry and handmade characteristics "
+        "if they are visible in the reference.",
+        "- Every decorative element must remain in its original position and "
+        "relationship to the other elements.",
+        "- Do NOT substitute, duplicate, remove, resize or reinterpret any component.",
+        "- Do NOT hallucinate missing jewelry components or complete hidden details "
+        "with invented designs.",
+        "",
+        "REAL-WORLD SIZE AND SCALE:",
+        "- Represent both jewelry pieces at realistic real-world physical sizes.",
+        "- Maintain physically believable proportions between the two pieces "
+        "based on their actual jewelry category and reference dimensions.",
+        "- Do NOT make either piece unrealistically oversized, miniature or "
+        "dramatically enlarged for visual impact.",
+        "- The apparent size of each jewelry piece must be consistent with how "
+        "that type of jewelry would physically exist in the real world.",
+        "- Preserve the correct proportions between chains, pendants, earrings, "
+        "beads, stones, clasps and other components.",
+        "- If one piece is naturally smaller than the other, preserve that size "
+        "difference rather than making them visually equal in size.",
+        "- Display props must also follow realistic scale so the jewelry does not "
+        "appear physically impossible or distorted.",
+        "- Use realistic camera perspective and focal length so that neither piece "
+        "appears artificially stretched, compressed or enlarged.",
+        "",
         "STAGING:",
         scene,
         "",
@@ -631,6 +682,22 @@ def build_set_creation_prompt(
         "- Sharp focus on both pieces.",
         "- No price tags, no text, no watermarks, no logos.",
         "- True-to-life colour.",
+        "",
+        "FINAL QUALITY CONTROL:",
+        "- Before generating the final image, verify both pieces against their "
+        "reference photographs.",
+        "- Verify that no jewelry component has been added, removed, duplicated, "
+        "merged or redesigned.",
+        "- Verify that the number and placement of stones, beads, pearls and drops "
+        "remain consistent with the references.",
+        "- Verify that the metal colour, stone colour, proportions and construction "
+        "remain faithful to the references.",
+        "- Verify that both pieces are sharply resolved and that fine jewelry details "
+        "are clearly visible.",
+        "- Verify that both pieces appear at realistic physical sizes and maintain "
+        "a believable size relationship.",
+        "- The final result must look like a real professional photograph of the "
+        "actual physical jewelry pieces, not an AI-generated recreation or redesign.",
     ]
 
     if note and note.strip():
