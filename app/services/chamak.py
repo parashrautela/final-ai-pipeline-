@@ -757,26 +757,36 @@ async def run_set_creation_generation(
             extra={"generation_id": generation_id},
         )
 
-        generated_bytes = await nanobana_client.compose_set(
+        generated_images = await nanobana_client.compose_set(
             [img1_url, img2_url],
             prompt=compiled_prompt,
-            image_size="3:4",
+            image_size=settings.set_creation_image_size,
+            output_count=settings.set_creation_output_count,
+            resolution=settings.set_creation_resolution,
         )
 
-        stored_output = upload_chamak_output(
-            file_content=generated_bytes,
-            wholesaler_id=wholesaler_id,
-            generation_id=generation_id,
-        )
-        output_storage_path = stored_output.url
+        stored_outputs = [
+            upload_chamak_output(
+                file_content=image,
+                wholesaler_id=wholesaler_id,
+                generation_id=f"{generation_id}_{index + 1}",
+            )
+            for index, image in enumerate(generated_images)
+        ]
+        primary_output = stored_outputs[0]
+        output_images = [
+            {"path": stored.url, "variants": stored.variants}
+            for stored in stored_outputs
+        ]
 
         await update_chamak_generation(
             generation_id,
             {
                 "compiled_prompt_text": compiled_prompt,
                 "prompt_version": settings.CHAMAK_PROMPT_VERSION,
-                "output_image_url": output_storage_path,
-                "output_variants": stored_output.variants or None,
+                "output_image_url": primary_output.url,
+                "output_variants": primary_output.variants or None,
+                "output_images": output_images,
                 "status": "done",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             },

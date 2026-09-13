@@ -310,14 +310,14 @@ async def update_chamak_generation(generation_id: str, updates: dict) -> Optiona
         try:
             resp = _apply(updates)
         except APIError as exc:
-            if exc.code != "PGRST204" or "output_variants" not in updates:
+            if exc.code != "PGRST204" or not ({"output_variants", "output_images"} & updates.keys()):
                 raise
             logger.warning(
                 f"'{settings.CHAMAK_TABLE_NAME}' has no output_variants column yet "
                 "(migration 010) — saving the generation without it",
                 extra={"generation_id": generation_id},
             )
-            resp = _apply({k: v for k, v in updates.items() if k != "output_variants"})
+            resp = _apply({k: v for k, v in updates.items() if k not in {"output_variants", "output_images"}})
         if resp.data:
             logger.info(
                 "Updated chamak_generation",

@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     # existed before any code read it either; ai.py had "2K" hardcoded.
     NANOBANA_IMAGE_SIZE: str = "2K"
 
+    # Set Creation uses the Pro image endpoint. These are intentionally
+    # deployment-configurable so Railway can tune output volume and quality
+    # without an app release.
+    SET_CREATION_OUTPUT_COUNT: int = 4
+    SET_CREATION_RESOLUTION: str = "4K"
+    SET_CREATION_IMAGE_SIZE: str = "2:3"
+
     @property
     def nanobana_resolution(self) -> str:
         value = (self.NANOBANA_IMAGE_SIZE or "").strip().upper()
@@ -121,6 +128,20 @@ class Settings(BaseSettings):
             )
             return "2K"
         return value
+
+    @property
+    def set_creation_output_count(self) -> int:
+        return max(1, min(int(self.SET_CREATION_OUTPUT_COUNT), 4))
+
+    @property
+    def set_creation_resolution(self) -> str:
+        value = (self.SET_CREATION_RESOLUTION or "").strip().upper()
+        return value if value in ("1K", "2K", "4K") else "4K"
+
+    @property
+    def set_creation_image_size(self) -> str:
+        value = (self.SET_CREATION_IMAGE_SIZE or "").strip()
+        return value if value in ("1:1", "2:3", "3:4", "4:5", "16:9") else "2:3"
 
     # Observability
     # Sentry DSN for error reporting. Left blank by default so the app still

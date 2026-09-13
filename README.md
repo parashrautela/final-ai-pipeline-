@@ -33,6 +33,20 @@ Notes:
 - Use the module path `app.main:app`. Do not pass a filesystem path like `./app/services/main:app`.
 - For production, run without `--reload` and prefer containerized deployments.
 
+### Set Creation Railway variables
+
+Set Creation uses Nano Banana Pro and reads these deployment variables:
+
+```text
+SET_CREATION_OUTPUT_COUNT=4
+SET_CREATION_RESOLUTION=4K
+SET_CREATION_IMAGE_SIZE=2:3
+```
+
+`SET_CREATION_OUTPUT_COUNT` is clamped to 1–4 and defaults to 4. Run
+`migrations/011_set_creation_outputs.sql` before enabling multiple outputs so
+all generated images are retained in the gallery.
+
 ---
 
 ## Repo layout (refactored)

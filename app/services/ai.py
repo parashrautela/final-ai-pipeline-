@@ -319,7 +319,7 @@ class NanobanaClient:
     # Verified live against the API on 2026-08-29: two URLs in `imageUrls`
     # are accepted, both are echoed back in the task's paramJson, and both
     # appear faithfully in the output image.
-    _GENERATE_URL_BASIC = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
+    _SET_GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
 
     # The API caps prompts the same way on both endpoints.
     _SET_MAX_PROMPT_CHARS = 5000
@@ -388,9 +388,11 @@ class NanobanaClient:
         image_urls: list[str],
         *,
         prompt: str,
-        image_size: str = "3:4",
-    ) -> bytes:
-        """Compose several source images into ONE staged photograph.
+        image_size: str = "2:3",
+        output_count: int | None = None,
+        resolution: str = "4K",
+    ) -> list[bytes]:
+        """Compose several source images into configurable staged photographs.
 
         Every URL must be publicly fetchable — the API downloads them itself
         and will not accept inline bytes or a Supabase signed URL that has
@@ -411,42 +413,41 @@ class NanobanaClient:
             )
             active_prompt = active_prompt[: self._SET_MAX_PROMPT_CHARS]
 
-        payload = {
-            "prompt": active_prompt,
-            # The vendor's own spelling. Not a typo on our side — see
-            # NANOBANA_API_REFERENCE.md; "IMAGETOIMAGE" is rejected.
-            "type": "IMAGETOIAMGE",
-            "imageUrls": image_urls,
-            "numImages": 1,
-            "image_size": image_size,
-            "callBackUrl": "https://api.nanobananaapi.ai/callback",
-        }
+        count = max(1, min(int(output_count or settings.set_creation_output_count), 4))
 
-        logger.info(
-            f"Nanobana set composition — {len(image_urls)} source images, "
-            f"image_size={image_size}, prompt={len(active_prompt)} chars"
-        )
-
-        async with httpx.AsyncClient(timeout=60.0) as submit_client:
-            response = await _request_with_retry(
-                submit_client,
-                "POST",
-                self._GENERATE_URL_BASIC,
-                headers=self._headers,
-                json=payload,
-                max_retries=settings.MAX_RETRIES,
+        async def generate_one(index: int) -> bytes:
+            payload = {
+                "prompt": active_prompt,
+                "type": "IMAGETOIAMGE",
+                "imageUrls": image_urls,
+                "resolution": (resolution or "4K").upper(),
+                "aspectRatio": image_size,
+                "callBackUrl": "https://api.nanobananaapi.ai/callback",
+            }
+            logger.info(
+                f"Nanobana Pro set composition {index + 1}/{count} — "
+                f"resolution={payload['resolution']}, image_size={image_size}, "
+                f"prompt={len(active_prompt)} chars"
             )
-            task_data = response.json()
+            async with httpx.AsyncClient(timeout=60.0) as submit_client:
+                response = await _request_with_retry(
+                    submit_client,
+                    "POST",
+                    self._SET_GENERATE_URL,
+                    headers=self._headers,
+                    json=payload,
+                    max_retries=settings.MAX_RETRIES,
+                )
+                task_data = response.json()
 
-        data_obj = task_data.get("data") or {}
-        task_id = (
-            task_data.get("taskId") or data_obj.get("taskId") or data_obj.get("id")
-        )
-        if not task_id:
-            raise ValueError(f"Failed to get taskId from Nanobana: {task_data}")
+            data_obj = task_data.get("data") or {}
+            task_id = task_data.get("taskId") or data_obj.get("taskId") or data_obj.get("id")
+            if not task_id:
+                raise ValueError(f"Failed to get taskId from Nanobana Pro: {task_data}")
+            logger.info(f"Nanobana Pro set task queued — taskId={task_id}")
+            return await self._await_task(task_id, label=f"set {index + 1}/{count}")
 
-        logger.info(f"Nanobana set task queued — taskId={task_id}")
-        return await self._await_task(task_id, label="set")
+        return await asyncio.gather(*(generate_one(i) for i in range(count)))
 
 
 class OpenAIImageClient:
