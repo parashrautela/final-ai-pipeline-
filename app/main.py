@@ -40,6 +40,7 @@ from app.db.repository import (
     update_product_image_url,
 )
 from app.logging import logger
+from app.onboarding_fee import router as onboarding_fee_router
 from app.services.chamak import (
     _refund_failed_generation,
     run_set_creation_generation,
@@ -106,6 +107,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(onboarding_fee_router)
 
 app.state.limiter = limiter
 # slowapi needs this handler registered so it returns a proper 429 JSON body

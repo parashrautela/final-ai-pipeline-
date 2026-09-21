@@ -150,6 +150,14 @@ class Settings(BaseSettings):
     # env var in the deployment environment to enable error tracking.
     SENTRY_DSN: str = ""
 
+    # ── Onboarding fee ───────────────────────────────────────────────────────
+    # What a wholesaler pays, once, before their application is sent. Whole
+    # rupees, GST included. Change it here in Railway; 0 turns the fee off.
+    ONBOARDING_FEE_INR: int = 9
+    # Razorpay, for the fee's payment page. The same keys credits-topup uses.
+    RAZORPAY_KEY_ID: str = ""
+    RAZORPAY_KEY_SECRET: str = ""
+
     # Worker
     POLL_INTERVAL_SECONDS: int = 2
     MAX_CONCURRENT_JOBS: int = 5
