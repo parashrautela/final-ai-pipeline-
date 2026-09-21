@@ -46,6 +46,8 @@ from app.services.chamak import (
     run_stage1_vision_analysis,
     run_stage4_generation,
     run_stage4_generation_openai,
+    SET_MIN_PIECES,
+    set_source_urls,
 )
 from app.services.backfill import backfill_on_startup
 from app.services.pipeline import process_product_image
@@ -940,19 +942,22 @@ async def set_creation_generate(
             ),
         )
 
-    # Both images are mandatory here. Fusion degrades to a single image when
-    # the second is missing; a "set" of one piece is meaningless, so refuse
-    # before charging rather than produce something the wholesaler cannot use.
-    if not row.get("source_image_1_url") or not row.get("source_image_2_url"):
+    # Two to four pieces. Fusion degrades to a single image when the second is
+    # missing; a "set" of one piece is meaningless, so refuse before charging
+    # rather than produce something the wholesaler cannot use.
+    pieces = len(set_source_urls(row))
+    if pieces < SET_MIN_PIECES:
         raise HTTPException(
             status_code=422,
-            detail="Set Creation needs two source images.",
+            detail=f"Set Creation needs at least {SET_MIN_PIECES} source images.",
         )
 
     # Same server-side re-roll pricing as Chamak: derived from the ledger, not
-    # claimed by the client.
+    # claimed by the client. A bigger set costs more: `chamak.set_creation` is
+    # the two-piece price, `chamak.set_creation_<n>` the three- and four-piece.
     prior = await count_prior_debits("chamak_generation", generation_id)
-    feature_key = "chamak.reroll" if prior > 0 else "chamak.set_creation"
+    first_key = "chamak.set_creation" if pieces == 2 else f"chamak.set_creation_{pieces}"
+    feature_key = "chamak.reroll" if prior > 0 else first_key
 
     charge = await _charge_or_reject(
         user_id=user_id,
@@ -964,6 +969,7 @@ async def set_creation_generate(
             "attempt": prior + 1,
             "mode": "set_creation",
             "backdrop": row.get("set_backdrop"),
+            "pieces": pieces,
         },
     )
     if _is_replay(charge):

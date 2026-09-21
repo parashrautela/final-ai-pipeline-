@@ -580,11 +580,84 @@ SET_BACKDROPS: dict[str, str] = {
 DEFAULT_SET_BACKDROP = "velvet_bust"
 
 
+# Set Creation takes two to four pieces. The two-piece prompt below is the
+# tuned original and is left word for word; larger sets are the same prompt
+# with its counting words swapped (see `_widen_set_prompt`).
+SET_MIN_PIECES = 2
+SET_MAX_PIECES = 4
+_PIECE_WORDS = {2: "two", 3: "three", 4: "four"}
+
+
+def _widen_set_prompt(text: str, pieces: int) -> str:
+    """Rewrite the two-piece prompt for three or four pieces.
+
+    A phrase that isn't found is a bug — each one is checked, so a later edit to the prompt that breaks a replacement
+    fails loudly in the tests instead of quietly asking the model for two.
+    """
+    word = _PIECE_WORDS[pieces]
+    labels = ", ".join(f"Image {i}" for i in range(1, pieces)) + f" and Image {pieces}"
+    replacements = [
+        ("I am giving you two photographs of two separate, real pieces of jewelry "
+         "from a jeweler's inventory: Image 1 and Image 2.",
+         f"I am giving you {word} photographs of {word} separate, real pieces of "
+         f"jewelry from a jeweler's inventory: {labels}. Image N shows piece N."),
+        ("showing BOTH pieces together", f"showing ALL {word.upper()} pieces together"),
+        ("- Do NOT redesign, improve, simplify or embellish either piece.",
+         "- Do NOT redesign, improve, simplify or embellish any piece."),
+        ("- Do NOT merge or blend the two pieces together into one object.",
+         "- Do NOT merge or blend any of the pieces together into one object."),
+        ("- Do NOT change one piece to match the other. If the two pieces do not "
+         "match each other, keep them not matching. That is intentional.",
+         "- Do NOT change one piece to match another. If the pieces do not match "
+         "each other, keep them not matching. That is intentional."),
+        ("- Do NOT add any third piece of jewelry. Only these two pieces, nothing else.",
+         f"- Do NOT add any other piece of jewelry. Only these {word} pieces, nothing else."),
+        ("stone placement or construction of either piece.",
+         "stone placement or construction of any piece."),
+        ("- Represent both jewelry pieces at realistic real-world physical sizes.",
+         "- Represent every jewelry piece at its realistic real-world physical size."),
+        ("proportions between the two pieces", "proportions between the pieces"),
+        ("- Do NOT make either piece unrealistically", "- Do NOT make any piece unrealistically"),
+        ("- If one piece is naturally smaller than the other, preserve that size "
+         "difference rather than making them visually equal in size.",
+         "- If one piece is naturally smaller than another, preserve that size "
+         "difference rather than making them visually equal in size."),
+        ("so that neither piece appears", "so that no piece appears"),
+        ("- Both pieces in one single scene", f"- All {word} pieces in one single scene"),
+        ("- NOT a side-by-side collage. NOT two photos pasted together.",
+         "- NOT a collage. NOT separate photos pasted together."),
+        ("- Correct real-world size relationship between the two pieces.",
+         "- Correct real-world size relationship between all the pieces."),
+        ("- Both pieces fully visible", f"- All {word} pieces fully visible"),
+        ("- Sharp focus on both pieces.", f"- Sharp focus on all {word} pieces."),
+        ("verify both pieces against their reference photographs.",
+         f"verify all {word} pieces against their reference photographs."),
+        ("- Verify that both pieces are sharply resolved",
+         f"- Verify that all {word} pieces are sharply resolved"),
+        ("- Verify that both pieces appear at realistic physical sizes",
+         f"- Verify that all {word} pieces appear at realistic physical sizes"),
+    ]
+    # Only there when a styling note was given.
+    optional = [
+        ("It must NOT modify either piece of jewelry.", "It must NOT modify any piece of jewelry."),
+        ("construction of either piece, ignore that part",
+         "construction of any piece, ignore that part"),
+    ]
+    for old, new in replacements:
+        if old not in text:
+            raise AssertionError(f"Set prompt no longer contains: {old[:60]!r}")
+        text = text.replace(old, new)
+    for old, new in optional:
+        text = text.replace(old, new)
+    return text
+
+
 def build_set_creation_prompt(
     backdrop: Optional[str] = None,
     note: Optional[str] = None,
+    pieces: int = SET_MIN_PIECES,
 ) -> str:
-    """Compose the Set Creation prompt.
+    """Compose the Set Creation prompt for `pieces` pieces (2–4).
 
     Kept well under the API's hard 5000-char prompt cap (see
     NanobanaClient._SET_MAX_PROMPT_CHARS) — this lands around 2.3k with a
@@ -716,7 +789,21 @@ def build_set_creation_prompt(
             note.strip(),
         ]
 
-    return "\n".join(sections)
+    text = "\n".join(sections)
+    if pieces < SET_MIN_PIECES or pieces > SET_MAX_PIECES:
+        raise ValueError(f"Set Creation takes {SET_MIN_PIECES}–{SET_MAX_PIECES} pieces, got {pieces}")
+    return text if pieces == 2 else _widen_set_prompt(text, pieces)
+
+
+def set_source_urls(row: dict) -> list[str]:
+    """The set's photos, in slot order. Slots are filled from 1 upward."""
+    urls = []
+    for slot in range(1, SET_MAX_PIECES + 1):
+        url = row.get(f"source_image_{slot}_url")
+        if not url:
+            break
+        urls.append(url)
+    return urls
 
 
 async def run_set_creation_generation(
@@ -733,23 +820,19 @@ async def run_set_creation_generation(
         wholesaler_id = str(row.get("wholesaler_id") or "default_wholesaler")
         await update_chamak_generation(generation_id, {"status": "generating"})
 
-        img1_url = row.get("source_image_1_url")
-        img2_url = row.get("source_image_2_url")
-
         # Unlike Fusion — which passes only image 1 and describes the second in
-        # text — both images are genuinely sent here. Set Creation is
-        # meaningless without both, so this is a hard failure rather than a
-        # silent degrade to a one-image call.
-        if not img1_url or not img2_url:
+        # text — every image is genuinely sent here. A set of one is
+        # meaningless, so this is a hard failure rather than a silent degrade.
+        source_urls = set_source_urls(row)
+        if len(source_urls) < SET_MIN_PIECES:
             raise ValueError(
-                "Set Creation needs both source_image_1_url and "
-                "source_image_2_url; got "
-                f"1={bool(img1_url)} 2={bool(img2_url)}"
+                f"Set Creation needs at least {SET_MIN_PIECES} source images; "
+                f"got {len(source_urls)}"
             )
 
         backdrop = row.get("set_backdrop") or DEFAULT_SET_BACKDROP
         note_text = row.get("note_text")
-        compiled_prompt = build_set_creation_prompt(backdrop, note_text)
+        compiled_prompt = build_set_creation_prompt(backdrop, note_text, pieces=len(source_urls))
 
         logger.info(
             f"Set Creation prompt compiled for {generation_id} "
@@ -758,7 +841,7 @@ async def run_set_creation_generation(
         )
 
         generated_images = await nanobana_client.compose_set(
-            [img1_url, img2_url],
+            source_urls,
             prompt=compiled_prompt,
             image_size=settings.set_creation_image_size,
             output_count=settings.set_creation_output_count,
@@ -795,7 +878,8 @@ async def run_set_creation_generation(
             f"Set Creation finished for {generation_id}",
             extra={
                 "generation_id": generation_id,
-                "output_image_url": output_storage_path,
+                "output_image_url": primary_output.url,
+                "pieces": len(source_urls),
             },
         )
 
