@@ -150,6 +150,13 @@ class Settings(BaseSettings):
     # env var in the deployment environment to enable error tracking.
     SENTRY_DSN: str = ""
 
+    # The one-time onboarding fee a wholesaler pays before their application is
+    # sent — whole rupees, GST included; 0 turns it off. Change it here in
+    # Railway. The pipeline only publishes it (GET /api/onboarding-fee); the
+    # payment itself is taken by the credits-topup Supabase function, which
+    # holds the Razorpay keys.
+    ONBOARDING_FEE_INR: int = 9
+
     # Worker
     POLL_INTERVAL_SECONDS: int = 2
     MAX_CONCURRENT_JOBS: int = 5

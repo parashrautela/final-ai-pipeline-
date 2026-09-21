@@ -186,3 +186,13 @@ def test_pipeline_uses_the_chosen_count(monkeypatch):
             asyncio.run(pipeline.process_product_image(
                 {"id": PRODUCT_ID, "image_url": "https://x/raw.jpg", "title": "t"}, image_count=3))
     assert sorted(seen) == [1, 2, 3]
+
+
+def test_onboarding_fee_is_published_from_settings(monkeypatch):
+    from app.main import onboarding_fee
+    from test_credits import make_request
+
+    monkeypatch.setattr(settings, "ONBOARDING_FEE_INR", 9)
+    assert asyncio.run(onboarding_fee(make_request())) == {"amount_inr": 9}
+    monkeypatch.setattr(settings, "ONBOARDING_FEE_INR", 0)
+    assert asyncio.run(onboarding_fee(make_request())) == {"amount_inr": 0}

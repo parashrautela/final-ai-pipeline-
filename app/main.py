@@ -408,6 +408,14 @@ async def health_check(request: Request):
     return {"status": "ok", "environment": settings.ENVIRONMENT}
 
 
+@app.get("/api/onboarding-fee")
+@limiter.limit("60/minute")
+async def onboarding_fee(request: Request):
+    """The onboarding fee, set in Railway as ONBOARDING_FEE_INR. Public: it's a
+    price, not a secret. credits-topup reads it when making the payment page."""
+    return {"amount_inr": max(0, int(settings.ONBOARDING_FEE_INR))}
+
+
 @app.post("/process", status_code=202)
 @limiter.limit("5/minute")
 async def process_upload(
