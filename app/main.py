@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
@@ -25,10 +26,11 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app.auth import require_ownership, require_user
+from app.auth import require_ownership, require_user, resolve_user_id
 from app.config import settings
 from app.db.repository import (
     count_prior_debits,
+    refund_debit,
     create_product,
     fetch_chamak_generation,
     fetch_job_by_id,
@@ -416,8 +418,26 @@ async def process_upload(
     jewellery_type: Optional[str] = Form(None),
     jewelry_type: Optional[str] = Form(None),
     wholesaler_id: Optional[str] = Form(None),
+    image_count: Optional[int] = Form(None),
+    authorization: Optional[str] = Header(default=None),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
-    """Upload an image and start the AI pipeline."""
+    """Upload an image and start the AI pipeline.
+
+    `image_count` is how many studio images the uploader is paying for (1–4);
+    each is priced on the rate card as `product.images_<n>`. A caller that
+    sends a session token is charged for it before any work starts, and
+    refunded if nothing could be generated.
+
+    A caller with no token (the web, until it sends one) is not charged and
+    gets the server's default count. That keeps the web working while it
+    catches up, and is the one free path left — close it by requiring a token
+    here once the web sends one.
+    """
+    # A token, when sent, is always verified — never downgraded to anonymous.
+    user_id: Optional[str] = None
+    if authorization:
+        user_id = await resolve_user_id(authorization)
     # Direct fallback in case fields are passed with alternative content headers
     form_data = None
     try:
@@ -457,28 +477,136 @@ async def process_upload(
             status_code=413, detail=f"File too large ({len(raw_bytes):,} bytes)"
         )
 
-    product = await create_product(
-        title=title,
-        jewellery_type=jewellery_type,
-        wholesaler_id=wholesaler_id,
-    )
-    product_id = product["id"]
+    count: Optional[int] = None
+    if image_count is not None:
+        if not 1 <= image_count <= 4:
+            raise HTTPException(status_code=422, detail="Choose between 1 and 4 images.")
+        count = image_count
 
-   
-    raw_url = upload_raw_image(raw_bytes, product_id, content_type)
-    await update_product_image_url(product_id, raw_url)
+    # A signed-in uploader's product is theirs, whatever the form says.
+    if user_id:
+        wholesaler_id = user_id
+
+    charge = await _charge_product_upload(
+        user_id=user_id,
+        image_count=count,
+        idempotency_key=idempotency_key,
+    )
+
+    try:
+        product = await create_product(
+            title=title,
+            jewellery_type=jewellery_type,
+            wholesaler_id=wholesaler_id,
+        )
+        product_id = product["id"]
+
+        raw_url = upload_raw_image(raw_bytes, product_id, content_type)
+        await update_product_image_url(product_id, raw_url)
+    except Exception:
+        # Paid for, but nothing was started: give it back before failing.
+        await _refund_product_upload(charge, reason="upload could not be saved")
+        raise
     product = {**product, "image_url": raw_url}
 
-    logger.info("Product created", extra={"product_id": product_id, "raw_url": raw_url})
+    logger.info(
+        "Product created",
+        extra={"product_id": product_id, "raw_url": raw_url, "image_count": count,
+               "charged": (charge or {}).get("charged")},
+    )
 
-    
-    background_tasks.add_task(_run_product_pipeline, product)
+    background_tasks.add_task(_run_product_pipeline, product, count, charge)
 
     return {
         "message": "Uploaded. Processing started in background.",
         "product_id": product_id,
         "raw_image_url": raw_url,
+        "image_count": count,
+        "charged": (charge or {}).get("charged", 0),
+        "balance": (charge or {}).get("balance"),
     }
+
+
+async def _charge_product_upload(
+    *,
+    user_id: Optional[str],
+    image_count: Optional[int],
+    idempotency_key: Optional[str],
+) -> Optional[dict]:
+    """Debit a product upload before any work starts, or refuse it.
+
+    Returns the spend result, or None when nothing is charged: metering off,
+    no signed-in caller, or no count chosen (an older client that doesn't
+    know about pricing). Fails closed like `_charge_or_reject`.
+    """
+    if not settings.CREDITS_ENABLED or user_id is None or image_count is None:
+        return None
+
+    # The client's key makes a double-tapped Submit charge once. Without one,
+    # every request is its own upload.
+    client_key = (idempotency_key or "").strip()[:_MAX_CLIENT_KEY_LEN] or str(uuid.uuid4())
+    reference_id = f"{user_id}:{client_key}"
+    feature_key = f"product.images_{image_count}"
+
+    try:
+        result = await spend_credits(
+            user_id=user_id,
+            feature_key=feature_key,
+            idempotency_key=f"product_upload:{reference_id}",
+            reference_type="product_upload",
+            reference_id=reference_id,
+            metadata={
+                "image_count": image_count,
+                "cost_paise": settings.COST_PAISE_BACKGROUND_REMOVAL
+                + settings.COST_PAISE_IMAGE_GENERATION * image_count,
+            },
+        )
+    except Exception as exc:
+        logger.error(f"Credit ledger unreachable for product upload: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not reach your Treasure Chest just now. Please try again.",
+        ) from exc
+
+    if result.get("ok"):
+        if result.get("replayed"):
+            # Same Submit, already paid for and already started.
+            raise HTTPException(status_code=409, detail="This design was already submitted.")
+        return result
+
+    if result.get("error") == "INSUFFICIENT_CREDITS":
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "INSUFFICIENT_CREDITS",
+                "message": "You do not have enough credits for this.",
+                "required": result.get("required"),
+                "balance": result.get("balance"),
+                "short_by": result.get("short_by"),
+            },
+        )
+    if result.get("error") == "UNKNOWN_FEATURE":
+        logger.error(f"No price on the rate card for {feature_key}")
+        raise HTTPException(status_code=503, detail="Uploading isn't priced yet. Please try again later.")
+
+    logger.error(f"Product upload charge refused: {result}")
+    raise HTTPException(status_code=500, detail="Could not charge for this upload. Please try again.")
+
+
+async def _refund_product_upload(charge: Optional[dict], *, reason: str) -> None:
+    """Give back exactly the upload's charge. Never raises: a refund that
+    fails is logged loudly for a person to settle, not surfaced to the user."""
+    ledger_id = (charge or {}).get("ledger_id")
+    if not ledger_id:
+        return
+    try:
+        await refund_debit(ledger_id, reason=reason)
+    except Exception:
+        logger.error(
+            "REFUND FAILED for a product upload — settle by hand",
+            extra={"ledger_id": ledger_id, "reason": reason},
+            exc_info=True,
+        )
 
 
 @app.post("/process/{image_id}")
@@ -553,11 +681,20 @@ async def get_product(request: Request, product_id: str):
     return product
 
 
-async def _run_product_pipeline(product: dict) -> None:
-    """Background task wrapper for the pipeline."""
+async def _run_product_pipeline(
+    product: dict,
+    image_count: Optional[int] = None,
+    charge: Optional[dict] = None,
+) -> None:
+    """Background task wrapper for the pipeline.
+
+    If nothing at all could be generated the upload's charge goes back. A
+    partial result (some images failed) keeps the charge — see the note in
+    `process_product_image`; a per-image refund is not built yet.
+    """
     product_id = product["id"]
     try:
-        generated_urls = await process_product_image(product)
+        generated_urls = await process_product_image(product, image_count)
         logger.info(
             f"Pipeline finished — {len(generated_urls)} variant(s)",
             extra={"product_id": product_id},
@@ -566,6 +703,7 @@ async def _run_product_pipeline(product: dict) -> None:
         logger.error(
             "Product pipeline failed", extra={"product_id": product_id}, exc_info=exc
         )
+        await _refund_product_upload(charge, reason="no studio images could be generated")
         # Without this, a failed generation looks identical to a still-processing
         # job forever — GET /product/{id} would keep reporting a pending/blank
         # state to the polling frontend instead of the real failure.

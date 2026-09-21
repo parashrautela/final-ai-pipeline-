@@ -90,7 +90,7 @@ async def _generate_variant(
         return None
 
 
-async def process_product_image(product: dict) -> list[str]:
+async def process_product_image(product: dict, image_count: Optional[int] = None) -> list[str]:
     """
     Full AI pipeline for a product — directly sends raw image URL to Nanobana with composed category prompts.
 
@@ -110,7 +110,12 @@ async def process_product_image(product: dict) -> list[str]:
 
     start = time.time()
 
+    # The uploader chooses how many studio images to pay for (1–4). Without a
+    # choice — the web, a re-run from the catalogue — the server default holds.
+    # TEST_MODE still forces one, so tests never pay for four generations.
     variant_count = settings.variant_count
+    if image_count is not None and not settings.TEST_MODE:
+        variant_count = max(1, min(int(image_count), 4))
     logger.info(
         f"Pipeline started ({variant_count}-variant mode"
         f"{' — TEST_MODE' if settings.TEST_MODE else ''})",
