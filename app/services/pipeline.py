@@ -42,6 +42,12 @@ VARIANT_SCENE_SETTINGS = [
     ),
 ]
 
+# Nano Banana handles two parallel Pro jobs reliably, but four simultaneous
+# jobs can leave one or more records running long after the other images have
+# completed. Keep a small queue so a slow variant cannot hold the completed
+# images back from the catalogue.
+MAX_CONCURRENT_VARIANTS = 2
+
 
 async def _generate_variant(
     input_image_url: str,
@@ -149,24 +155,57 @@ async def process_product_image(product: dict, image_count: Optional[int] = None
     ]
 
     active_prompts = variant_prompts[:variant_count]
-    results = await asyncio.gather(
-        *[
-            _generate_variant(
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_VARIANTS)
+    stored_by_index: dict[int, StoredImage] = {}
+
+    async def run_variant(index: int, prompt: str) -> tuple[int, Optional[StoredImage]]:
+        async with semaphore:
+            stored = await _generate_variant(
                 input_image_url=raw_image_url,
                 product_id=product_id,
-                variant_index=i + 1,
-                prompt=p,
+                variant_index=index + 1,
+                prompt=prompt,
                 jewellery_type=jewellery_type,
                 base_version=composed.base_module_version,
                 category_version=composed.category_module_version,
                 wholesaler_id=wholesaler_id,
             )
-            for i, p in enumerate(active_prompts)
-        ]
-    )
+        return index, stored
 
-    # Filter out any None values from variants that failed.
-    stored_images = [stored for stored in results if stored is not None]
+    tasks = [
+        asyncio.create_task(run_variant(i, prompt))
+        for i, prompt in enumerate(active_prompts)
+    ]
+
+    # Persist each result as it finishes instead of waiting for every variant.
+    # Retailers and wholesalers can see completed images right away, and one
+    # slow provider task no longer hides the other successful outputs.
+    for completed in asyncio.as_completed(tasks):
+        index, stored = await completed
+        if stored is None:
+            continue
+
+        stored_by_index[index] = stored
+        current_images = [stored_by_index[i] for i in sorted(stored_by_index)]
+        current_urls = [image.url for image in current_images]
+        try:
+            await update_product_generated_images(
+                product_id,
+                current_urls,
+                update_image_url=True,
+                image_variants={image.url: image.variants for image in current_images if image.variants},
+            )
+        except Exception:
+            # A transient DB error on one partial write should not cancel the
+            # remaining provider jobs; the final write below retries the full
+            # successful set once all jobs settle.
+            logger.exception(
+                "Could not persist partial generated image set",
+                extra={"product_id": product_id, "variant_index": index + 1},
+            )
+
+    # Preserve variant order (rather than completion order) in the saved list.
+    stored_images = [stored_by_index[i] for i in sorted(stored_by_index)]
     successful_urls = [stored.url for stored in stored_images]
 
     if not successful_urls:
@@ -174,8 +213,8 @@ async def process_product_image(product: dict, image_count: Optional[int] = None
 
     logger.info(f"{len(successful_urls)}/{variant_count} variants generated", extra={"product_id": product_id})
 
-    # Persist to database. The small copies go in the same update as the URLs
-    # they belong to, so the row is never half-described.
+    # Final write is intentional even though partial writes ran above: it
+    # retries the canonical complete set after a transient database failure.
     await update_product_generated_images(
         product_id,
         successful_urls,
