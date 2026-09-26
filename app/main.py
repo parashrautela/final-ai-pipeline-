@@ -34,6 +34,7 @@ from app.db.repository import (
     create_product,
     fetch_chamak_generation,
     fetch_job_by_id,
+    get_supabase,
     spend_credits,
     update_chamak_generation,
     update_job_status,
@@ -512,12 +513,25 @@ async def process_upload(
         product_id = product["id"]
 
         raw_url = upload_raw_image(raw_bytes, product_id, content_type)
+        # Keep the original upload in its own durable column. `image_url` is
+        # the compatibility/display column and becomes the first generated
+        # variant when processing completes.
         await update_product_image_url(product_id, raw_url)
+        try:
+            get_supabase().table(settings.DB_TABLE_NAME).update(
+                {"raw_image_url": raw_url}
+            ).eq("id", product_id).execute()
+        except Exception as raw_column_error:
+            logger.warning(
+                "Could not persist raw_image_url; retaining legacy image_url source",
+                extra={"product_id": product_id},
+                exc_info=raw_column_error,
+            )
     except Exception:
         # Paid for, but nothing was started: give it back before failing.
         await _refund_product_upload(charge, reason="upload could not be saved")
         raise
-    product = {**product, "image_url": raw_url}
+    product = {**product, "image_url": raw_url, "raw_image_url": raw_url}
 
     logger.info(
         "Product created",
@@ -654,7 +668,17 @@ async def process_image(
 
         raw_url = upload_raw_image(raw_bytes, image_id, content_type)
         await update_product_image_url(image_id, raw_url)
-        product = {**product, "image_url": raw_url}
+        try:
+            get_supabase().table(settings.DB_TABLE_NAME).update(
+                {"raw_image_url": raw_url}
+            ).eq("id", image_id).execute()
+        except Exception as raw_column_error:
+            logger.warning(
+                "Could not persist raw_image_url; retaining legacy image_url source",
+                extra={"product_id": image_id},
+                exc_info=raw_column_error,
+            )
+        product = {**product, "image_url": raw_url, "raw_image_url": raw_url}
 
     elif not product.get("image_url"):
         raise HTTPException(
@@ -1019,4 +1043,3 @@ async def get_chamak_status(
         )
     require_ownership(row, user_id)
     return row
-

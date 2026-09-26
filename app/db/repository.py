@@ -235,7 +235,13 @@ async def update_product_generated_images(
         logger.warning("update_product_generated_images called with empty list — skipping", extra={"product_id": product_id})
         return
 
-    payload: dict = {"generated_image_urls": generated_urls}
+    # Keep the legacy scalar fields in sync with the variants. Older catalogue
+    # clients read `processed_image_url` first and otherwise continue showing
+    # the uploader's original image even though generated_image_urls is full.
+    payload: dict = {
+        "generated_image_urls": generated_urls,
+        "processed_image_url": generated_urls[0],
+    }
     if update_image_url:
         payload["image_url"] = generated_urls[0]
     if image_variants:
@@ -245,15 +251,18 @@ async def update_product_generated_images(
         try:
             get_supabase().table(_TABLE).update(payload).eq("id", product_id).execute()
         except APIError as exc:
-            if exc.code != "PGRST204" or "image_variants" not in payload:
+            # Older deployments may not have one or both optional compatibility
+            # columns yet. Preserve the canonical generated URL array and
+            # image_url update rather than failing the entire pipeline write.
+            optional_columns = ("image_variants", "processed_image_url")
+            if exc.code != "PGRST204" or not any(key in payload for key in optional_columns):
                 raise
+            fallback_payload = {key: value for key, value in payload.items() if key not in optional_columns}
             logger.warning(
-                f"'{_TABLE}' has no image_variants column yet (migration 010) — "
-                "storing the URLs without it",
-                extra={"product_id": product_id},
+                f"'{_TABLE}' is missing an optional image column; retrying with canonical image URLs",
+                extra={"product_id": product_id, "omitted_columns": [key for key in optional_columns if key in payload]},
             )
-            payload.pop("image_variants")
-            get_supabase().table(_TABLE).update(payload).eq("id", product_id).execute()
+            get_supabase().table(_TABLE).update(fallback_payload).eq("id", product_id).execute()
 
         logger.info(
             f"Stored {len(generated_urls)} generated image URL(s)",

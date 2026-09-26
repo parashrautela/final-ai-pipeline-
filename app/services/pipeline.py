@@ -104,7 +104,11 @@ async def process_product_image(product: dict, image_count: Optional[int] = None
     Returns list of successful variant URLs. Raises if all fail.
     """
     product_id = product["id"]
-    raw_image_url = product.get("image_url")
+    # `raw_image_url` is the durable source photo. `image_url` is a legacy
+    # display field and is overwritten with the first generated result after
+    # processing. Reprocessing must therefore use the raw column when present,
+    # or it will feed a previous generated image back into the model.
+    raw_image_url = product.get("raw_image_url") or product.get("image_url")
     if not raw_image_url:
         raise ValueError(f"Product {product_id} has no image_url")
 
