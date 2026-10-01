@@ -412,9 +412,8 @@ async def health_check(request: Request):
 @app.get("/api/onboarding-fee")
 @limiter.limit("60/minute")
 async def onboarding_fee(request: Request):
-    """The onboarding fee, set in Railway as ONBOARDING_FEE_INR. Public: it's a
-    price, not a secret. credits-topup reads it when making the payment page."""
-    return {"amount_inr": max(0, int(settings.ONBOARDING_FEE_INR))}
+    """Onboarding has no fee during the daily-credit offer."""
+    return {"amount_inr": 0, "payments_enabled": False}
 
 
 @app.post("/process", status_code=202)

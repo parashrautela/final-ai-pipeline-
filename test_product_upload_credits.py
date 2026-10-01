@@ -188,11 +188,11 @@ def test_pipeline_uses_the_chosen_count(monkeypatch):
     assert sorted(seen) == [1, 2, 3]
 
 
-def test_onboarding_fee_is_published_from_settings(monkeypatch):
+def test_onboarding_fee_is_zero_even_with_legacy_paid_setting(monkeypatch):
     from app.main import onboarding_fee
     from test_credits import make_request
 
     monkeypatch.setattr(settings, "ONBOARDING_FEE_INR", 9)
-    assert asyncio.run(onboarding_fee(make_request())) == {"amount_inr": 9}
+    assert asyncio.run(onboarding_fee(make_request())) == {"amount_inr": 0, "payments_enabled": False}
     monkeypatch.setattr(settings, "ONBOARDING_FEE_INR", 0)
-    assert asyncio.run(onboarding_fee(make_request())) == {"amount_inr": 0}
+    assert asyncio.run(onboarding_fee(make_request())) == {"amount_inr": 0, "payments_enabled": False}

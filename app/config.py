@@ -155,7 +155,7 @@ class Settings(BaseSettings):
     # Railway. The pipeline only publishes it (GET /api/onboarding-fee); the
     # payment itself is taken by the credits-topup Supabase function, which
     # holds the Razorpay keys.
-    ONBOARDING_FEE_INR: int = 9
+    ONBOARDING_FEE_INR: int = 0
 
     # Worker
     POLL_INTERVAL_SECONDS: int = 2
@@ -182,7 +182,7 @@ class Settings(BaseSettings):
     #   2. run migrations/004_credits_treasure_chest.sql
     #   3. verify wallets are populating, then flip this to true
     # With it off, credit-bearing routes behave exactly as they did before.
-    CREDITS_ENABLED: bool = False
+    CREDITS_ENABLED: bool = True
 
     # What a single AI call actually costs us, in paise, recorded into
     # credit_ledger.metadata on every debit. We bill a FLAT price — these are
