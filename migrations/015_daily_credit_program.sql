@@ -314,7 +314,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION public.credits_history(p_limit INT DEFAULT 50,p_offset INT DEFAULT 0,p_kind TEXT DEFAULT NULL,
+CREATE OR REPLACE FUNCTION public.credits_history(p_limit INT DEFAULT 50,p_offset INT DEFAULT 0,p_kind TEXT DEFAULT NULL,
   p_before TIMESTAMPTZ DEFAULT NULL,p_before_id UUID DEFAULT NULL)
 RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE v_owner UUID := public.credits_resolve_owner(auth.uid()); v_count INT; v_rows JSONB;

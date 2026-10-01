@@ -31,6 +31,55 @@ async function rpc(client, name, args = []) {
   return rows[0].result;
 }
 
+// Run BEFORE the daily-credit migration to prove the live repair is independent.
+async function checkIndependentHistory(admin) {
+  await q(admin,'BEGIN');
+  const owner = randomUUID(), staff = randomUUID(), stranger = randomUUID(), wholesaler = randomUUID();
+  await q(admin,'INSERT INTO auth.users VALUES($1),($2),($3),($4)',[owner,staff,stranger,wholesaler]);
+  const store = (await q(admin,"INSERT INTO retailers(user_id,verification_status) VALUES($1,'verified') RETURNING id",[owner])).rows[0].id;
+  await q(admin,"INSERT INTO retailers(user_id,verification_status) VALUES($1,'verified')",[stranger]);
+  await q(admin,"INSERT INTO wholesalers(user_id,verification_status) VALUES($1,'verified')",[wholesaler]);
+  await q(admin,"INSERT INTO employees(auth_user_id,retailer_id,status) VALUES($1,$2,'active')",[staff,store]);
+  for (const id of [owner,stranger,wholesaler]) await rpc(admin,'credits_ensure_account',[id]);
+  const ids = [randomUUID(),randomUUID()].sort().reverse();
+  for (const id of ids) await q(admin,"INSERT INTO credit_ledger(id,account_id,delta,kind,balance_after,created_at) VALUES($1,$2,-10,'debit',100,'2026-10-01 12:00:00+00')",[id,owner]);
+  await q(admin,"INSERT INTO credit_ledger(account_id,delta,kind,balance_after) VALUES($1,-20,'debit',80),($2,-30,'debit',70)",[stranger,wholesaler]);
+  const before = (await q(admin,"SELECT jsonb_agg(to_jsonb(a) ORDER BY wholesaler_id) AS state FROM credit_accounts a")).rows[0].state;
+  await q(admin,'SET LOCAL ROLE authenticated');
+  await q(admin,"SELECT set_config('request.jwt.claim.sub',$1,true)",[owner]);
+  const ownerPage = await rpc(admin,'credits_history',[1,0,'debit']);
+  check('history works with the existing wallet before daily mode',()=>{assert.equal(ownerPage.ok,true);assert.equal(ownerPage.count,2);assert.equal(ownerPage.data[0].id,ids[0]);});
+  const next = await rpc(admin,'credits_history',[1,0,'debit',ownerPage.data[0].created_at,ids[0]]);
+  check('history cursor keeps equal-timestamp entries without duplicates',()=>assert.equal(next.data[0].id,ids[1]));
+  await q(admin,"SELECT set_config('request.jwt.claim.sub',$1,true)",[staff]);
+  const staffPage = await rpc(admin,'credits_history',[100,0,'debit']);
+  check('active staff history is limited to the business ledger',()=>assert.deepEqual(staffPage.data.map(r=>r.id),ids));
+  await q(admin,"SELECT set_config('request.jwt.claim.sub',$1,true)",[wholesaler]);
+  const wholePage = await rpc(admin,'credits_history',[10,0,'debit']);
+  check('wholesaler history is isolated from retailer wallets',()=>{assert.equal(wholePage.data.length,1);assert.equal(wholePage.data[0].delta,-30);});
+  await q(admin,'RESET ROLE');
+  await q(admin,"UPDATE employees SET status='inactive' WHERE auth_user_id=$1",[staff]);
+  await q(admin,'SET LOCAL ROLE authenticated');
+  await q(admin,"SELECT set_config('request.jwt.claim.sub',$1,true)",[staff]);
+  check('inactive staff cannot read business history',()=>{});
+  assert.equal((await rpc(admin,'credits_history')).error,'NOT_VERIFIED');
+  await q(admin,'RESET ROLE');
+  await q(admin,"UPDATE retailers SET verification_status='banned' WHERE id=$1",[store]);
+  await q(admin,'SET LOCAL ROLE authenticated');
+  await q(admin,"SELECT set_config('request.jwt.claim.sub',$1,true)",[owner]);
+  assert.equal((await rpc(admin,'credits_history')).error,'NOT_VERIFIED');
+  check('suspended owners cannot read history',()=>{});
+  await q(admin,'RESET ROLE');
+  const after = (await q(admin,"SELECT jsonb_agg(to_jsonb(a) ORDER BY wholesaler_id) AS state FROM credit_accounts a")).rows[0].state;
+  check('history reads do not alter credit balances',()=>assert.deepEqual(after,before));
+  await q(admin,'SAVEPOINT anonymous_check');
+  await q(admin,'SET LOCAL ROLE anon');
+  await assert.rejects(()=>rpc(admin,'credits_history'),error=>error.code==='42501');
+  await q(admin,'ROLLBACK TO SAVEPOINT anonymous_check');
+  check('anonymous callers cannot read any credit history',()=>{});
+  await q(admin,'ROLLBACK');
+}
+
 try {
   await database.initialise(); await database.start();
   const admin = await connect();
@@ -62,13 +111,15 @@ try {
     'wholesaler ios/supabase/migrations/20260919_02_customer_wishlists.sql',
     'wholesaler ios/supabase/migrations/20260919_03_retailer_plans.sql',
     'wholesaler ios/supabase/migrations/20260926_01_apple_iap_credits.sql',
-    'ai-pipeline/migrations/014_wishlist_sharing.sql', 'ai-pipeline/migrations/015_daily_credit_program.sql',
+    'ai-pipeline/migrations/014_wishlist_sharing.sql', 'ai-pipeline/migrations/016_credit_history_rpc.sql',
+    'ai-pipeline/migrations/015_daily_credit_program.sql',
   ];
   for (const file of migrations) {
     const sql = await readFile(path.join(workspace, file), 'utf8');
     // Boundary tests use one shared controlled clock. All other SQL/locking is unchanged.
     await admin.query(sql.replaceAll('clock_timestamp()', 'jewel_test.clock()'));
     console.log(`APPLIED ${path.basename(file)}`);
+    if (file.endsWith('016_credit_history_rpc.sql')) await checkIndependentHistory(admin);
   }
   await admin.query('GRANT ALL ON ALL TABLES IN SCHEMA public,auth TO service_role');
   const owner = randomUUID(), employee = randomUUID(), stranger = randomUUID(), wholesaler = randomUUID();
