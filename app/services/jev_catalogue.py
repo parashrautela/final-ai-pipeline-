@@ -5,16 +5,17 @@ import os
 import time
 
 import httpx
+import numpy as np
 from app.services.catalogue_search import cache_key, visual_fingerprint
 
 MODEL = "jev-1.13.0"
-INSTRUCTIONS = "Are these photos visually similar enough to suggest closely matching jewellery designs? Evaluate only the supplied measurements; you cannot see the photos. Do not claim piracy, ownership, material, exact product identity or guaranteed accuracy. Identical decoded pixels are strong direct evidence. High CLIP alone may indicate only the same broad category. Use uncertain when the evidence cannot distinguish matching designs from different jewellery of the same category."
+INSTRUCTIONS = "Do these isolated jewellery subjects have closely matching designs, silhouettes and visible ornamentation? Compare the jewellery, not the photograph. Background, lighting, photo dimensions and placement are irrelevant; color alone cannot establish gemstone or material identity. Evaluate only the supplied measurements; you cannot see the photos. Do not claim piracy, ownership, material, exact product identity or guaranteed accuracy. Identical decoded pixels are strong direct evidence. Near-zero normalized resized-pixel error, together with high CLIP and low dHash difference, strongly supports a resized or JPEG-compressed copy even when dimensions and exact hashes differ. Do not require byte or pixel identity for compressed copies. Shared backgrounds can also reduce error, so consider all measurements together. High CLIP alone may indicate only the same broad category. Use uncertain when the evidence cannot distinguish matching designs from different jewellery of the same category."
 CRITERIA = {
     "similar": "Strong evidence of identical or closely matching visual appearance beyond merely the same category.",
     "different": "Strong evidence of substantially different visual appearance.",
     "uncertain": "Ambiguous or insufficient evidence; visual review or richer image descriptions are needed.",
 }
-LIMITATIONS = "CLIP can score distinct jewellery designs highly. Shared backgrounds or category can raise similarity. dHash compares global layout, not product identity. No captions or jewellery-specific validation are available. These numbers are not calibrated percentages."
+LIMITATIONS = "CLIP can score distinct jewellery designs highly. Background removal is approximate and can miss thin chains or keep props. Subject pixel errors and dHash compare silhouette/layout, not exact product identity or hidden geometry. Viewpoint changes are not fully normalized. No captions or jewellery-specific validation are available. These numbers are not calibrated percentages."
 
 
 def configured():
@@ -22,12 +23,18 @@ def configured():
 
 
 def pair_evidence(query, candidate, similarity):
+    a = np.frombuffer(bytes.fromhex(query["rgb_sample"]), dtype=np.uint8).astype(np.float32) / 255
+    b = np.frombuffer(bytes.fromhex(candidate["rgb_sample"]), dtype=np.uint8).astype(np.float32) / 255
+    delta = a - b
     return {"byte_identical": query["bytes_sha256"] == candidate["bytes_sha256"],
             "decoded_rgb_pixels_identical": query["pixels_sha256"] == candidate["pixels_sha256"],
             "clip_cosine_similarity": round(similarity, 6),
+            "normalized_resized_pixel_mae": round(float(np.abs(delta).mean()), 6),
+            "normalized_resized_pixel_rmse": round(float(np.sqrt(np.mean(delta ** 2))), 6),
+            "pixel_error_scale": "0 means equal after RGB resize to 64x64; 1 is maximum channel difference. These are image errors, not probabilities.",
             "dhash_different_bits_out_of_64": sum(a != b for a, b in zip(query["dhash"], candidate["dhash"])),
-            "image_a_dimensions": query["dimensions"], "image_b_dimensions": candidate["dimensions"],
-            "visual_encoder": "CLIP ViT-B/32 quantized, run locally", "limitations": LIMITATIONS}
+            "comparison_target": "foreground jewellery, background removed and subject centered on identical neutral canvases",
+            "visual_encoder": "CLIP ViT-B/32 on isolated foregrounds, run locally", "limitations": LIMITATIONS}
 
 
 def parse_answer(answer):
@@ -55,7 +62,7 @@ async def decide_matches(index, photo, rows, result):
     pairs, questions = {}, {}
     for i, match in enumerate(result["matches"]):
         fingerprint = index.fingerprints.get(cache_key(row_by_id[match["id"]]))
-        if not fingerprint:
+        if not fingerprint or "rgb_sample" not in fingerprint:
             index.schedule_refresh()
             raise LookupError("Catalogue comparison evidence is updating. Please retry shortly.")
         name = f"pair_{i}"

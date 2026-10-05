@@ -26,3 +26,17 @@ Only actual Jev `similar` choices are returned as matches. Uncertain/different c
 Production requires server-only `TYPESAFE_API_KEY`. Jev model is pinned to `jev-1.13.0`. GET `/api/retailer/image-search/status` exposes configuration presence, encoder/evidence counts and model only, never the key. The app transport must understand `decision_source=jev` and each match’s decision/probability; older builds still impose the CLIP cutoff. The UI and multipart query contract are unchanged.
 
 Checks: `python tests/jev-catalogue.test.py` (batched actual-choice parsing, below-cutoff acceptance, uncertainty rejection, provider/incomplete-response errors, missing key/evidence, candidate recall and cache migration), plus existing access and real-encoder tests.
+
+
+Resized-photo correction: the native app sends a resized JPEG, so exact hashes differ from catalogue originals. Catalogue fingerprints now include an internal 64×64 RGB sample; local code compares these samples and sends only normalized pixel MAE/RMSE numbers to Jev. The sample itself never leaves this service, and customer samples remain in request memory. Jev’s instructions account for compression/resize evidence rather than requiring exact pixels. Old fingerprint caches are rebuilt automatically. An app-sized reference that previously yielded uncertain/no results now passes the real 12-candidate Jev batch test.
+
+
+## Jewellery foreground correction
+
+Before both catalogue indexing and query encoding, a verified small U2NetP foreground model isolates the subject locally. The soft mask preserves holes and fine edges, crops the foreground, then centers it on an identical neutral square canvas. CLIP vectors and pair fingerprints now describe these foregrounds, not the original photographs. Both sides use the same preprocessing; the persistent cache is versioned by the foreground-model checksum and rebuilt automatically.
+
+Jev receives foreground cosine, silhouette/layout hashes and normalized foreground pixel errors. It receives no image or sample array. Instructions explicitly target jewellery design and visible ornamentation, ignore photo placement/background, and do not infer gemstone/material identity from color. Catalogue pixel samples are internal persistent features; customer samples stay in request memory. The model is baked into Docker, and no new runtime dependency is needed.
+
+Real tests: the app-sized JPEG that previously returned uncertain was accepted first among 12 catalogue candidates. The same necklace on three synthetic grey/red/blue backgrounds was accepted by Jev. These are one-piece background-invariance checks, not proof of matching arbitrary designs, lighting or viewing angles. Segmentation is generic foreground detection, not a jewellery-trained detector: worn jewellery, props and thin chains can still be difficult. Unusable masks return an explicit clearer-photo error rather than treating the whole photo as jewellery.
+
+Model/source: https://github.com/danielgatis/rembg and official U2NetP release; pinned SHA256 `309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8`. GET status now reports engine `jewellery-subject-clip-jev`.

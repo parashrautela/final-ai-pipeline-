@@ -56,3 +56,5 @@ CMD ["python", "-m", "uvicorn", "app.main:app", \
      "--loop", "asyncio", \
      "--log-level", "info", \
      "--no-access-log"]
+# Bake the verified foreground model alongside the image encoder.
+RUN python -m app.services.jewellery_subject

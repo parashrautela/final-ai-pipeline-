@@ -13,6 +13,8 @@ from app.services.catalogue_search import CatalogueIndex, cache_key, visual_fing
 
 class Decisions(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.subject_patch=patch('app.services.catalogue_search.subject.isolate',side_effect=lambda photo:(photo,{'target':'test isolated subject'}))
+        self.subject_patch.start();self.addCleanup(self.subject_patch.stop)
         data=io.BytesIO();Image.new('RGB',(40,40),'white').save(data,'JPEG');self.photo=data.getvalue()
         self.rows=[dict(id='a',is_published=True,jewellery_type='necklace',image_url='https://catalogue.test/a.jpg'),dict(id='b',is_published=True,jewellery_type='necklace',image_url='https://catalogue.test/b.jpg')]
         self.index=SimpleNamespace(fingerprints={cache_key(row):visual_fingerprint(self.photo) for row in self.rows},schedule_refresh=lambda:None)
@@ -31,7 +33,7 @@ class Decisions(unittest.IsolatedAsyncioTestCase):
         result,requests=await self.decide({'pair_0':self.answer('similar'),'pair_1':self.answer('different')})
         self.assertEqual([m['id'] for m in result['matches']],['a']);self.assertEqual(result['matches'][0]['similarity'],.85)
         self.assertEqual(result['decision_source'],'jev');self.assertEqual(len(requests),1)
-        body=requests[0].content.decode();self.assertNotIn('catalogue.test',body);self.assertNotIn('pixels_sha256',body)
+        body=requests[0].content.decode();self.assertNotIn('catalogue.test',body);self.assertNotIn('pixels_sha256',body);self.assertNotIn('rgb_sample',body)
         self.assertEqual(requests[0].headers['authorization'],'Bearer test-only-key')
     async def test_uncertain_is_not_displayed_as_similar(self):
         result,_=await self.decide({'pair_0':self.answer('uncertain'),'pair_1':self.answer('uncertain')})
@@ -56,6 +58,16 @@ class Decisions(unittest.IsolatedAsyncioTestCase):
         candidates=await index.search(self.photo,self.rows,'necklace',candidate_limit=12)
         self.assertEqual(len(candidates['matches']),2)
         old=await index.search(self.photo,self.rows,'necklace');self.assertEqual(len(old['matches']),1)
+    async def test_resized_jpeg_has_strong_pixel_evidence_without_exact_hash(self):
+        pixels=np.zeros((180,240,3),dtype=np.uint8)
+        pixels[:,:,0]=np.arange(240,dtype=np.uint8)[None,:]
+        pixels[:,:,1]=np.arange(180,dtype=np.uint8)[:,None]
+        source=Image.fromarray(pixels);a=io.BytesIO();source.save(a,'PNG')
+        resized=source.resize((120,90));b=io.BytesIO();resized.save(b,'JPEG',quality=92)
+        evidence=jev.pair_evidence(visual_fingerprint(a.getvalue()),visual_fingerprint(b.getvalue()),.99)
+        self.assertFalse(evidence['decoded_rgb_pixels_identical'])
+        self.assertLess(evidence['normalized_resized_pixel_rmse'],.025)
+        self.assertNotIn('rgb_sample',evidence)
     async def test_fingerprint_cache_roundtrip(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:

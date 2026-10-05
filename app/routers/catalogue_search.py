@@ -109,6 +109,7 @@ async def search(request: Request, photo: UploadFile = File(...), jewellery_type
 @router.get("/api/retailer/image-search/status")
 async def search_status():
     from app.services.jev_catalogue import configured, MODEL
-    return JSONResponse({"engine": "clip-jev", "model": MODEL, "jev_configured": configured(),
-                         "indexed_images": len(index.vectors), "indexed_evidence": len(index.fingerprints)},
+    return JSONResponse({"engine": "jewellery-subject-clip-jev", "subject_model": "u2netp", "comparison_target": "isolated jewellery", "model": MODEL, "jev_configured": configured(),
+                         "indexed_images": len(index.vectors), "indexed_evidence": len(index.fingerprints), "unavailable_images": len(index.failed),
+                         "index_refreshing": index.refresh_lock.locked()},
                         headers={"Cache-Control": "no-store"})

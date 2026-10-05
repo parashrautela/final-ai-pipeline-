@@ -15,6 +15,7 @@ import httpx
 import numpy as np
 import onnxruntime as ort
 from PIL import Image, ImageOps, UnidentifiedImageError
+from app.services.jewellery_subject import subject, SubjectNotFound, SUBJECT_SHA256
 
 logger = logging.getLogger(__name__)
 MODEL_REVISION = "d15189d7028b43f1d3e65039190477f6af591c2a"
@@ -114,7 +115,12 @@ class ImageEncoder:
         return np.ascontiguousarray(((pixels - mean) / std).transpose(2, 0, 1)[None])
 
     def embed(self, photo: bytes) -> np.ndarray:
-        pixels = self.pixels(photo)
+        self.pixels(photo)
+        try:
+            isolated, _ = subject.isolate(photo)
+        except SubjectNotFound as exc:
+            raise InvalidPhoto(str(exc)) from exc
+        pixels = self.pixels(isolated)
         with self.lock:
             if self.session is None:
                 download_model(self.path)
@@ -132,14 +138,20 @@ class ImageEncoder:
 def visual_fingerprint(photo: bytes) -> dict:
     # Validate the same image bounds before decoding full pixels.
     ImageEncoder.pixels(photo)
-    with Image.open(io.BytesIO(photo)) as source:
+    try:
+        isolated, details = subject.isolate(photo)
+    except SubjectNotFound as exc:
+        raise InvalidPhoto(str(exc)) from exc
+    with Image.open(io.BytesIO(isolated)) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
         size = image.size
         digest = hashlib.sha256(str(size).encode() + image.tobytes()).hexdigest()
         gray = np.asarray(image.convert("L").resize((9, 8), Image.Resampling.LANCZOS))
         bits = (gray[:, 1:] > gray[:, :-1]).reshape(-1)
-        return {"bytes_sha256": hashlib.sha256(photo).hexdigest(), "pixels_sha256": digest,
-                "dhash": "".join("1" if bit else "0" for bit in bits), "dimensions": list(size)}
+        return {"bytes_sha256": hashlib.sha256(isolated).hexdigest(), "pixels_sha256": digest,
+                "dhash": "".join("1" if bit else "0" for bit in bits), "dimensions": list(size),
+                "rgb_sample": image.resize((64, 64), Image.Resampling.LANCZOS).tobytes().hex(),
+                "subject": details}
 
 
 class CatalogueIndex:
@@ -157,7 +169,7 @@ class CatalogueIndex:
     def load_cache(self):
         try:
             saved = json.loads(self.cache_path.read_text())
-            if saved.get("model_sha256") != MODEL_SHA256:
+            if saved.get("model_sha256") != MODEL_SHA256 or saved.get("subject_sha256") != SUBJECT_SHA256:
                 return
             for key, values in saved.get("vectors", {}).items():
                 vector = np.asarray(values, dtype=np.float32)
@@ -167,7 +179,9 @@ class CatalogueIndex:
                     fingerprint = saved.get("fingerprints", {}).get(key, {})
                     if (all(isinstance(fingerprint.get(k), str) and len(fingerprint[k]) == 64 for k in ("bytes_sha256", "pixels_sha256", "dhash"))
                         and set(fingerprint["dhash"]) <= {"0", "1"}
-                        and isinstance(fingerprint.get("dimensions"), list) and len(fingerprint["dimensions"]) == 2):
+                        and isinstance(fingerprint.get("dimensions"), list) and len(fingerprint["dimensions"]) == 2
+                        and isinstance(fingerprint.get("rgb_sample"), str) and len(fingerprint["rgb_sample"]) == 24576
+                        and set(fingerprint["rgb_sample"]) <= set("0123456789abcdef")):
                         self.fingerprints[key] = fingerprint
         except (OSError, ValueError, TypeError):
             pass
@@ -175,7 +189,7 @@ class CatalogueIndex:
     def persist(self, vectors):
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.cache_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"model_sha256": MODEL_SHA256, "vectors": vectors, "fingerprints": self.fingerprints}, separators=(",", ":")))
+        temporary.write_text(json.dumps({"model_sha256": MODEL_SHA256, "subject_sha256": SUBJECT_SHA256, "vectors": vectors, "fingerprints": self.fingerprints}, separators=(",", ":")))
         temporary.replace(self.cache_path)
 
     async def download(self, client: httpx.AsyncClient, url: str | None) -> bytes:
