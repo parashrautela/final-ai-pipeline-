@@ -37,3 +37,7 @@ typing_extensions==4.15.0
 uvicorn==0.27.1
 websockets==15.0.1
 Pillow==12.3.0
+
+# CPU image retrieval: catalogue vectors are reused between queries.
+onnxruntime==1.23.2
+numpy==2.2.6

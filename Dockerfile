@@ -34,6 +34,10 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=8000
 
 USER appuser
+# Bake the verified public encoder into the image; no model download during a
+# customer search. The private product index lives only in the server cache.
+ENV IMAGE_SEARCH_MODEL_PATH=/home/appuser/.cache/jewel-image-search/vision.onnx
+RUN python -m app.services.catalogue_search
 EXPOSE 8000
 
 # Lightweight health check using stdlib urllib — no extra binaries needed.

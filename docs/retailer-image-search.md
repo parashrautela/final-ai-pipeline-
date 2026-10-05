@@ -1,0 +1,17 @@
+# Indexed retailer image search
+
+`POST /api/retailer/image-search` accepts multipart `photo` and `jewellery_type`, plus a Supabase bearer session. It requires both retailer user metadata and a verified retailer row, even when credits are disabled. It returns ranked `{matches: [{id, similarity}], checked, total, skipped}` with private/no-store caching. No supplier identity or product-selection write is included.
+
+The server uses the pinned, checksum-verified CLIP ViT-B/32 quantized ONNX encoder on its own CPU. Product vectors are computed in the background and saved in the server cache. Queries encode only the uploaded photo and compare it against already indexed products of the selected jewellery type. The active published-product list is fetched per query, so an unpublished product is excluded immediately. Changing a photo URL invalidates its old embedding. Refresh runs every minute; missing vectors return a retryable 503 rather than a false “no matches”. Unavailable catalogue images are counted separately.
+
+The initial cutoff is cosine similarity 0.90 and results are capped at 20. This is a retrieval threshold, not a measured 90% accuracy claim. Labelled jewellery evaluation is still needed for different camera angles, screenshots, backgrounds, and similar-looking designs. Matching is not evidence of ownership or copying.
+
+The app sends one oriented, resized JPEG to this service. Query photos are not saved to product storage or sent to Jev/Hugging Face/an external inference API. Multipart temporary files are closed and removed after reading. Downloads for catalogue indexing are restricted to this project's Supabase host and Cloudinary, with no redirects, a 10 MB limit, and timeouts. Uploaded photos also have a size/pixel/aspect-ratio limit. Search does not consume generation credits.
+
+The Docker build downloads the fixed public model once and verifies its SHA-256. Runtime index path defaults to the app user's cache; set `IMAGE_SEARCH_INDEX_PATH` on a persistent volume to retain vectors across redeploys. `IMAGE_SEARCH_MODEL_PATH` can point to the baked model. Without a persistent volume the index is rebuilt after a new deployment. Model weights/indices/credentials are not committed to Git. Existing Supabase server credentials must be valid.
+
+Run `python tests/catalogue-search-api.test.py` for role/session/upload/readiness checks, and `IMAGE_SEARCH_MODEL_PATH=/path/to/vision.onnx python tests/catalogue-search.integration.py /path/to/read-only-fixture.json` for actual retrieval and latency. Fixture: `{reference: "/absolute/photo.jpg", category: "necklace", products: [...]}`; first product is the reference. The real-image check covers exact and app-sized self-match, unrelated-image rejection, published/category isolation, persistent cache consistency, partial failure, and invalid uploads.
+
+A 362-product published catalogue was indexed and the exact query ranked first; the app-sized JPEG also ranked first. Warm query computation on the development machine was about 45 ms. This excludes authentication, HTTP, production hardware and network latency; do not advertise it as end-to-end app timing. The initial complete indexing run took about 149 seconds and is background work, not repeated per search.
+
+Release order: deploy this backend, allow indexing to finish, then distribute the native app update. The existing app generation routes continue independently. There is no new database migration or Jev API key requirement.
