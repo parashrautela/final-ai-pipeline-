@@ -47,7 +47,7 @@ class SearchAccess(unittest.IsolatedAsyncioTestCase):
     async def test_authorized_readonly_query(self):
         rows=[dict(id="product",is_published=True,jewellery_type="necklace")]
         result=dict(matches=[dict(id="product",similarity=.99)],checked=1,total=1,skipped=0)
-        with patch.object(api,"get_supabase",return_value=self.db()),patch.object(api,"fetch_rows",return_value=rows),patch.object(api.index,"search",new=AsyncMock(return_value=result)) as search:
+        with patch.object(api,"get_supabase",return_value=self.db()),patch.object(api,"fetch_rows",return_value=rows),patch.object(api.index,"search",new=AsyncMock(return_value=result)) as search,patch.object(api,"decide_matches",new=AsyncMock(return_value=result)):
             response=await self.call("Bearer test-session")
             self.assertEqual(response.status_code,200);self.assertEqual(response.json(),result)
             self.assertIn("no-store",response.headers["cache-control"]);search.assert_awaited_once()

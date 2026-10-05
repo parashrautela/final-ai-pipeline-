@@ -9,6 +9,7 @@ from slowapi.util import get_remote_address
 
 from app.config import settings
 from app.db.repository import get_supabase
+from app.services.jev_catalogue import decide_matches
 from app.services.catalogue_search import COLUMNS, MAX_BYTES, CatalogueIndex, ImageEncoder, InvalidPhoto, category
 
 router = APIRouter()
@@ -92,7 +93,8 @@ async def search(request: Request, photo: UploadFile = File(...), jewellery_type
         rows = await asyncio.to_thread(fetch_rows)
         if category(jewellery_type) not in {category(row.get("jewellery_type")) for row in rows}:
             raise HTTPException(400, "Select a category available in the catalogue.")
-        result = await index.search(data, rows, jewellery_type)
+        result = await index.search(data, rows, jewellery_type, candidate_limit=12)
+        result = await decide_matches(index, data, rows, result)
     except InvalidPhoto as exc:
         raise HTTPException(400, str(exc))
     except LookupError as exc:
@@ -102,3 +104,11 @@ async def search(request: Request, photo: UploadFile = File(...), jewellery_type
     except Exception:
         raise HTTPException(503, "Image search is temporarily unavailable. Please try again.")
     return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/api/retailer/image-search/status")
+async def search_status():
+    from app.services.jev_catalogue import configured, MODEL
+    return JSONResponse({"engine": "clip-jev", "model": MODEL, "jev_configured": configured(),
+                         "indexed_images": len(index.vectors), "indexed_evidence": len(index.fingerprints)},
+                        headers={"Cache-Control": "no-store"})

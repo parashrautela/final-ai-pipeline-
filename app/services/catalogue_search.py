@@ -129,6 +129,19 @@ class ImageEncoder:
         return vector / norm
 
 
+def visual_fingerprint(photo: bytes) -> dict:
+    # Validate the same image bounds before decoding full pixels.
+    ImageEncoder.pixels(photo)
+    with Image.open(io.BytesIO(photo)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        size = image.size
+        digest = hashlib.sha256(str(size).encode() + image.tobytes()).hexdigest()
+        gray = np.asarray(image.convert("L").resize((9, 8), Image.Resampling.LANCZOS))
+        bits = (gray[:, 1:] > gray[:, :-1]).reshape(-1)
+        return {"bytes_sha256": hashlib.sha256(photo).hexdigest(), "pixels_sha256": digest,
+                "dhash": "".join("1" if bit else "0" for bit in bits), "dimensions": list(size)}
+
+
 class CatalogueIndex:
     def __init__(self, encoder: ImageEncoder, fetch_rows, allowed_hosts: set[str], cache_path: Path | None = None):
         self.encoder, self.fetch_rows = encoder, fetch_rows
@@ -136,6 +149,7 @@ class CatalogueIndex:
         self.cache_path = cache_path or Path(os.getenv("IMAGE_SEARCH_INDEX_PATH", str(Path.home() / ".cache/jewel-image-search/index.json")))
         self.vectors: dict[str, np.ndarray] = {}
         self.failed: set[str] = set()
+        self.fingerprints: dict[str, dict] = {}
         self.refresh_lock = asyncio.Lock()
         self.refresh_task = None
         self.load_cache()
@@ -150,13 +164,18 @@ class CatalogueIndex:
                 norm = float(np.linalg.norm(vector))
                 if vector.shape == (512,) and np.isfinite(vector).all() and 0.99 < norm < 1.01:
                     self.vectors[key] = vector
+                    fingerprint = saved.get("fingerprints", {}).get(key, {})
+                    if (all(isinstance(fingerprint.get(k), str) and len(fingerprint[k]) == 64 for k in ("bytes_sha256", "pixels_sha256", "dhash"))
+                        and set(fingerprint["dhash"]) <= {"0", "1"}
+                        and isinstance(fingerprint.get("dimensions"), list) and len(fingerprint["dimensions"]) == 2):
+                        self.fingerprints[key] = fingerprint
         except (OSError, ValueError, TypeError):
             pass
 
     def persist(self, vectors):
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.cache_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"model_sha256": MODEL_SHA256, "vectors": vectors}, separators=(",", ":")))
+        temporary.write_text(json.dumps({"model_sha256": MODEL_SHA256, "vectors": vectors, "fingerprints": self.fingerprints}, separators=(",", ":")))
         temporary.replace(self.cache_path)
 
     async def download(self, client: httpx.AsyncClient, url: str | None) -> bytes:
@@ -186,17 +205,20 @@ class CatalogueIndex:
                 rows = [r for r in rows if r.get("is_published") is True]
                 keys = {cache_key(row) for row in rows}
                 self.vectors = {key: vector for key, vector in self.vectors.items() if key in keys}
+                self.fingerprints = {key: value for key, value in self.fingerprints.items() if key in keys}
                 self.failed.intersection_update(keys)
                 concurrency = asyncio.Semaphore(4)
                 async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
                     async def index(row):
                         key = cache_key(row)
-                        if key in self.vectors:
+                        if key in self.vectors and key in self.fingerprints:
                             return
                         async with concurrency:
                             try:
                                 photo = await self.download(client, source_url(row))
-                                self.vectors[key] = await asyncio.to_thread(self.encoder.embed, photo)
+                                if key not in self.vectors:
+                                    self.vectors[key] = await asyncio.to_thread(self.encoder.embed, photo)
+                                self.fingerprints[key] = await asyncio.to_thread(visual_fingerprint, photo)
                                 self.failed.discard(key)
                             except asyncio.CancelledError:
                                 raise
@@ -216,7 +238,7 @@ class CatalogueIndex:
             await self.refresh()
             await asyncio.sleep(60)
 
-    async def search(self, photo: bytes, rows: list[dict], chosen_category: str) -> dict:
+    async def search(self, photo: bytes, rows: list[dict], chosen_category: str, *, candidate_limit: int | None = None) -> dict:
         rows = [r for r in rows if r.get("is_published") is True and category(r.get("jewellery_type")) == category(chosen_category)]
         if not rows:
             return {"matches": [], "checked": 0, "total": 0, "skipped": 0}
@@ -233,9 +255,9 @@ class CatalogueIndex:
         if not np.isfinite(scores).all():
             raise RuntimeError("Invalid catalogue similarity scores")
         matches = [{"id": row["id"], "similarity": float(np.clip(score, -1, 1))}
-                   for row, score in zip(available, scores) if np.isfinite(score) and score >= MIN_SIMILARITY]
+                   for row, score in zip(available, scores) if np.isfinite(score) and (candidate_limit is not None or score >= MIN_SIMILARITY)]
         matches.sort(key=lambda match: (-match["similarity"], match["id"]))
-        return {"matches": matches[:20], "checked": len(available), "total": len(rows), "skipped": len(rows) - len(available)}
+        return {"matches": matches[:candidate_limit or 20], "checked": len(available), "total": len(rows), "skipped": len(rows) - len(available)}
 
 
 if __name__ == "__main__":

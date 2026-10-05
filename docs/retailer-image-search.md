@@ -14,4 +14,15 @@ Run `python tests/catalogue-search-api.test.py` for role/session/upload/readines
 
 A 362-product published catalogue was indexed and the exact query ranked first; the app-sized JPEG also ranked first. Warm query computation on the development machine was about 45 ms. This excludes authentication, HTTP, production hardware and network latency; do not advertise it as end-to-end app timing. The initial complete indexing run took about 149 seconds and is background work, not repeated per search.
 
-Release order: deploy this backend, allow indexing to finish, then distribute the native app update. The existing app generation routes continue independently. There is no new database migration or Jev API key requirement.
+Release order: deploy this backend, allow indexing to finish, then distribute the native app update. The existing app generation routes continue independently. There is no new database migration; the Jev flow requires the server-only key described below.
+
+
+## Jev pilot decision flow
+
+The authenticated image-search endpoint now retrieves the top 12 category candidates without a CLIP acceptance cutoff, then batches one Jev Choice per candidate in a single request. Measurements match the isolated pilot: CLIP cosine, byte/pixel equality, dHash difference and dimensions. The persistent server index stores catalogue fingerprints alongside vectors; customer fingerprints stay in query memory. No customer or catalogue photos, product IDs, supplier identities or URLs go to Jev. Anonymous pair labels identify each question.
+
+Only actual Jev `similar` choices are returned as matches. Uncertain/different choices are exposed in decision metadata but excluded from matches. There is no CLIP-only fallback on provider failure: a retryable 503 is returned. This follows the pilot and does not establish jewellery retrieval accuracy. Missing catalogue evidence triggers a refresh/readiness response.
+
+Production requires server-only `TYPESAFE_API_KEY`. Jev model is pinned to `jev-1.13.0`. GET `/api/retailer/image-search/status` exposes configuration presence, encoder/evidence counts and model only, never the key. The app transport must understand `decision_source=jev` and each match’s decision/probability; older builds still impose the CLIP cutoff. The UI and multipart query contract are unchanged.
+
+Checks: `python tests/jev-catalogue.test.py` (batched actual-choice parsing, below-cutoff acceptance, uncertainty rejection, provider/incomplete-response errors, missing key/evidence, candidate recall and cache migration), plus existing access and real-encoder tests.
