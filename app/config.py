@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""  # service role bypasses RLS, keep this secret
 
+    # Apple push credentials remain server-only and optional.
+    APNS_KEY_ID: str = ""
+    APNS_TEAM_ID: str = ""
+    APNS_BUNDLE_ID: str = "com.jewelindia.app"
+    APNS_PRIVATE_KEY: str = ""
+    APNS_ENVIRONMENT: str = "development"
+
     # AI Models
     REVE_API_KEY: str = ""
     REVE_PROMPT: str = ""
