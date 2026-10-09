@@ -6,6 +6,7 @@ from typing import Optional
 
 from app.db.repository import fetch_active_prompt_modules
 from app.logging import logger
+from app.jewellery_types import normalize_chain_type
 
 # Cache duration in seconds (1 minute TTL)
 CACHE_TTL_SECONDS = 60.0
@@ -115,7 +116,7 @@ class PromptComposer:
 
                 for m in modules:
                     m_type = (m.get("module_type") or "").strip().lower()
-                    j_type = (m.get("jewellery_type") or "").strip().lower() if m.get("jewellery_type") else None
+                    j_type = normalize_chain_type(m["jewellery_type"]) if m.get("jewellery_type") else None
                     item = PromptModuleItem(
                         id=str(m.get("id", "")),
                         module_type=m_type,
@@ -193,9 +194,12 @@ class PromptComposer:
             version=1,
         )
 
-        norm_type = (jewellery_type or "other").strip().lower()
+        norm_type = normalize_chain_type(jewellery_type or "other")
         category_item = self._cached_categories.get(norm_type)
         matched_type = norm_type
+
+        if not category_item and norm_type == "chain":
+            raise ValueError("Chains image generation is not available until the chain prompt is activated.")
 
         if not category_item:
             category_item = self._cached_categories.get("other")

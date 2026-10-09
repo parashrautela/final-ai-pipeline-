@@ -588,6 +588,7 @@ SET_MAX_PIECES = 4
 _PIECE_WORDS = {2: "two", 3: "three", 4: "four"}
 
 CANONICAL_JEWELLERY_TYPES = {
+    "chain": {"chain", "chains", "neck chain", "neck chains"},
     "necklace": {"necklace", "necklaces"},
     "ring": {"ring", "rings"},
     "earrings": {"earring", "earrings", "jhumka", "jhumkas"},
