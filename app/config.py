@@ -1,5 +1,6 @@
 import logging
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 _log = logging.getLogger(__name__)
@@ -245,6 +246,8 @@ class Settings(BaseSettings):
     # aspect <= 3:1, max edge 3840) but sits in OpenAI's "experimental" band
     # above 2560x1440. Drop to "1536x1536" if the API rejects it.
     OPENAI_IMAGE_SIZE: str = "2048x2048"
+    # Image edits return synchronously; allow up to five minutes per request.
+    OPENAI_IMAGE_TIMEOUT_SECONDS: float = Field(default=300.0, gt=0)
     # Reference images are downscaled to this long edge before upload. The
     # input token budget caps out around 1536 tokens, so sending larger buys
     # nothing but latency.
