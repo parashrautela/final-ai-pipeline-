@@ -89,9 +89,10 @@ try {
     CREATE FUNCTION auth.uid() RETURNS UUID LANGUAGE sql STABLE AS
       $$ SELECT nullif(current_setting('request.jwt.claim.sub', true),'')::uuid $$;
     CREATE TABLE public.wholesalers(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),user_id UUID REFERENCES auth.users,
-      verification_status TEXT,full_name TEXT,business_name TEXT,phone TEXT,email TEXT);
+      verification_status TEXT,full_name TEXT,business_name TEXT,phone TEXT,email TEXT,business_logo_url TEXT);
     CREATE TABLE public.retailers(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),user_id UUID REFERENCES auth.users,
-      verification_status TEXT,full_name TEXT,business_name TEXT,selected_theme TEXT);
+      verification_status TEXT,full_name TEXT,business_name TEXT,selected_theme TEXT,referred_by UUID,referral_code TEXT,
+      rejection_reason TEXT,notification_message TEXT,notified BOOLEAN);
     CREATE TABLE public.employees(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),auth_user_id UUID REFERENCES auth.users,
       retailer_id UUID REFERENCES public.retailers,status TEXT,full_name TEXT);
     CREATE TABLE public.products(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),title TEXT,jewellery_type TEXT,net_weight NUMERIC,
@@ -103,6 +104,7 @@ try {
     INSERT INTO jewel_test.time VALUES('2026-10-01 18:29:00+00');
     CREATE FUNCTION jewel_test.clock() RETURNS TIMESTAMPTZ LANGUAGE sql VOLATILE AS $$ SELECT value FROM jewel_test.time $$;
   `);
+  if(process.env.JEWEL_REFERRAL_MIGRATION==='1') await admin.query(`CREATE TABLE referral_links(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),wholesaler_id UUID REFERENCES wholesalers(id),code TEXT UNIQUE,uses_count INT DEFAULT 0,max_uses INT DEFAULT 1,is_active BOOLEAN DEFAULT true,created_at TIMESTAMPTZ DEFAULT now());`);
   const migrations = [
     'ai-pipeline/migrations/004a_tables_and_rls.sql', 'ai-pipeline/migrations/004b_functions.sql',
     'ai-pipeline/migrations/004c_trigger_seed_grants.sql', 'ai-pipeline/migrations/006_razorpay_purchases.sql',
@@ -113,6 +115,7 @@ try {
     'wholesaler ios/supabase/migrations/20260926_01_apple_iap_credits.sql',
     'ai-pipeline/migrations/014_wishlist_sharing.sql', 'ai-pipeline/migrations/016_credit_history_rpc.sql',
     'ai-pipeline/migrations/015_daily_credit_program.sql',
+    ...(process.env.JEWEL_REFERRAL_MIGRATION==='1' ? ['ai-pipeline/migrations/012_retailer_referrals.sql','ai-pipeline/migrations/017_invitation_gifts.sql','ai-pipeline/migrations/018_preserve_purchased_credits.sql'] : []),
   ];
   for (const file of migrations) {
     const sql = await readFile(path.join(workspace, file), 'utf8');

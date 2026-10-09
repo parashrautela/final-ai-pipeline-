@@ -38,6 +38,7 @@ sys.path.insert(0, str(WORKSPACE_ROOT))
 import httpx
 import pgserver
 import psycopg
+from psycopg.types.json import Jsonb
 from PIL import Image
 
 import app.main
@@ -51,7 +52,7 @@ MIGRATION_PATH = WORKSPACE_ROOT / "migrations/019_manufacturing_requests_broadca
 
 def setup_test_db():
     temp_dir = tempfile.mkdtemp(prefix="jewel-mfg-api-test-")
-    server = pgserver.get_server(temp_dir, cleanup_mode=None)
+    server = pgserver.get_server(temp_dir, cleanup_mode="stop")
     admin_uri = server.get_uri()
 
     with psycopg.connect(admin_uri, autocommit=True) as conn:
@@ -222,7 +223,7 @@ class PostgresTableQuery:
                 try:
                     if self._insert_data is not None:
                         cols = list(self._insert_data.keys())
-                        vals = list(self._insert_data.values())
+                        vals = [Jsonb(value) if isinstance(value, dict) else value for value in self._insert_data.values()]
                         placeholders = ", ".join(["%s"] * len(cols))
                         col_names = ", ".join(f'"{c}"' for c in cols)
                         if self._on_conflict:
@@ -355,6 +356,8 @@ async def run_api_tests():
     print("\n--- 1. Bootstrapping Database & Schema ---")
     server, db_uri, temp_dir = setup_test_db()
     bootstrap_db(db_uri)
+    with psycopg.connect(db_uri, autocommit=True) as db:
+        db.execute((WORKSPACE_ROOT / "migrations/021_parallel_manufacturing_quotes.sql").read_text())
     print("  [PASS] Test database bootstrapped with 019 schema")
 
     # Seed users into auth.users and role tables
@@ -491,9 +494,9 @@ async def run_api_tests():
             req_data = res.json()
             assert req_data["ok"] is True
             request_id = req_data["request_id"]
-            active_offer_id = req_data["active_offer_id"]
-            assert req_data["state"] == "routing"
-            print(f"  [PASS] Request created in routing state (request_id: {request_id}, active_offer: {active_offer_id})")
+            active_offer_id = None
+            assert req_data["state"] == "collecting"
+            print(f"  [PASS] Request created in collecting state (request_id: {request_id}, active_offer: {active_offer_id})")
 
             # 4.3 Atomic Idempotency Replay
             res_replay = await client.post("/api/retailer/manufacturing-requests", json=valid_payload, headers=headers)
@@ -515,8 +518,8 @@ async def run_api_tests():
             assert res.status_code == 200
             offers = res.json().get("offers", [])
             assert len(offers) == 1
-            assert offers[0]["id"] == active_offer_id
-            assert offers[0]["status"] == "active"
+            active_offer_id = offers[0]["id"]
+            assert offers[0]["status"] == "open"
             print("  [PASS] Wholesaler 1 received Rank 1 offer in inbox")
 
             # 4.5 Wholesaler 1 Declines Offer
@@ -529,7 +532,7 @@ async def run_api_tests():
             assert res.status_code == 200
             decline_res = res.json()
             assert decline_res["ok"] is True
-            print("  [PASS] Wholesaler 1 declined offer with reason; queue advanced to Wholesaler 2")
+            print("  [PASS] Wholesaler 1 declined offer with reason; other invitations stay open")
 
             # 4.6 Wholesaler 2 Receives and Accepts Offer with Quote
             app.main.app.dependency_overrides[mfg_router.require_verified_wholesaler] = lambda: {
@@ -545,7 +548,7 @@ async def run_api_tests():
             ws2_offers = res.json().get("offers", [])
             assert len(ws2_offers) == 1
             ws2_offer_id = ws2_offers[0]["id"]
-            assert ws2_offers[0]["status"] == "active"
+            assert ws2_offers[0]["status"] == "open"
             print(f"  [PASS] Wholesaler 2 received Rank 2 offer ({ws2_offer_id})")
 
             accept_payload = {
@@ -558,17 +561,19 @@ async def run_api_tests():
                 "comments": "Ready to cast immediately upon CAD confirmation.",
             }
             res = await client.post(
-                f"/api/wholesaler/manufacturing-offers/{ws2_offer_id}/accept",
+                f"/api/wholesaler/manufacturing-offers/{ws2_offer_id}/quotes",
                 json=accept_payload,
                 headers={"Authorization": f"Bearer token-{u_ws2}"},
             )
             assert res.status_code == 200
             accept_res = res.json()
             assert accept_res["ok"] is True
-            assert accept_res["status"] == "assigned"
+            assert accept_res["status"] == "quoted"
             quote_id = accept_res["quote_id"]
-            print(f"  [PASS] Wholesaler 2 accepted offer with quote (quote_id: {quote_id})")
+            print(f"  [PASS] Wholesaler 2 submitted quote (quote_id: {quote_id})")
 
+            res = await client.post(f"/api/retailer/manufacturing-requests/{request_id}/award", json={"quote_id": quote_id})
+            assert res.status_code == 200, res.text
             # 4.7 Retailer Verifies Assigned Request & Quote Details
             res = await client.get(
                 f"/api/retailer/manufacturing-requests/{request_id}",

@@ -241,6 +241,9 @@ async def update_product_generated_images(
     payload: dict = {
         "generated_image_urls": generated_urls,
         "processed_image_url": generated_urls[0],
+        "ai_processing_state": "ready",
+        "ai_verified_output_urls": generated_urls,
+        "ai_completed_at": datetime.now(timezone.utc).isoformat(),
     }
     if update_image_url:
         payload["image_url"] = generated_urls[0]
@@ -254,7 +257,13 @@ async def update_product_generated_images(
             # Older deployments may not have one or both optional compatibility
             # columns yet. Preserve the canonical generated URL array and
             # image_url update rather than failing the entire pipeline write.
-            optional_columns = ("image_variants", "processed_image_url")
+            optional_columns = (
+                "image_variants",
+                "processed_image_url",
+                "ai_processing_state",
+                "ai_verified_output_urls",
+                "ai_completed_at",
+            )
             if exc.code != "PGRST204" or not any(key in payload for key in optional_columns):
                 raise
             fallback_payload = {key: value for key, value in payload.items() if key not in optional_columns}

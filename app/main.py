@@ -49,6 +49,7 @@ from app.services.chamak import (
     run_stage4_generation_openai,
     SET_MIN_PIECES,
     set_source_urls,
+    validate_set_manifest,
 )
 from app.services.backfill import backfill_on_startup
 from app.services.pipeline import process_product_image

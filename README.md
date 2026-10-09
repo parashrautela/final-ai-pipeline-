@@ -101,3 +101,11 @@ If you'd like, I can also:
 # final-ai-pipeline-
 # final-ai-pipeline-
 # final-ai-pipeline-
+
+## Shared invitation accounting
+
+Invitation HTTP routes live in the Next.js repository, not this Python service. Shared accounting migrations live here: `017_invitation_gifts.sql`, `017b_referral_expiry_schedule.sql`, and `018_preserve_purchased_credits.sql`, with daily-credit migration 015 and the existing credit/onboarding prerequisites. See [the release handoff](../plans/invitation-referrals-release.md) for deployment order, grants, flags and checks.
+
+The user selected preservation of unused purchased credits on 3 October 2026. Migration 018 keeps original lots, sources, receipt IDs and unit counts; the trusted `credits_preserve_purchased()` operation records their original expiry and makes them non-expiring. It creates a zero-delta audit ledger entry, not another grant. Preserved paid units join the bonus balance and may fund invitation extras after daily units; original-lot refunds retain that source. Unreconciled receipt statuses, missing preservation audit or unconverted paid balances block activation.
+
+Migrations and activation have not been applied to production. The live invitation route/schema gap is recorded in the release handoff. Verify paid receipt/provider retirement prerequisites before activating. Local validation now covers 27 referral/preservation scenarios and 39 wallet regressions with real PostgreSQL.

@@ -282,6 +282,7 @@ class CreateRequestPayload(BaseModel):
     delivery_needed_date: date
     notes: Optional[str] = Field(default=None, max_length=2000)
     superseded_request_id: Optional[uuid.UUID] = None
+    quotation_window_hours: int = Field(default=24, ge=1, le=48)
 
 
 @router.post("/retailer/manufacturing-requests")
@@ -292,7 +293,7 @@ async def create_manufacturing_request(
 ):
     """Validated creation of a manufacturing request.
 
-    Stores idempotency key, constructs candidate queue, and activates Rank 1 offer.
+    Stores an atomic retry key and invites all verified wholesalers with one deadline.
     """
     if payload.max_weight_grams < payload.min_weight_grams:
         raise HTTPException(422, "Maximum weight cannot be less than minimum weight.")
@@ -305,6 +306,7 @@ async def create_manufacturing_request(
 
         # Call database function with row locks, transaction safety, and atomic idempotency
         params = {
+            "p_offer_duration_seconds": payload.quotation_window_hours * 3600,
             "p_asset_id": str(payload.asset_id),
             "p_category": payload.category.strip(),
             "p_min_weight": payload.min_weight_grams,
@@ -325,7 +327,7 @@ async def create_manufacturing_request(
             "p_request_hash": hashlib.sha256(payload.model_dump_json().encode()).hexdigest() if idempotency_key else None,
         }
 
-        rpc_res = user_sb.rpc("manufacturing_request_create", params).execute().data
+        rpc_res = user_sb.rpc("manufacturing_broadcast_create", params).execute().data
 
         if not rpc_res or not rpc_res.get("ok"):
             err = rpc_res.get("error") if rpc_res else "CREATION_FAILED"
@@ -353,7 +355,7 @@ async def list_retailer_requests(
                 "id, category, min_weight_grams, max_weight_grams, material, purity, "
                 "gemstone_preference, quantity, making_budget_mode, making_budget_amount, "
                 "currency, delivery_needed_date, state, active_offer_id, assigned_wholesaler_id, "
-                "created_at, updated_at, assigned_at, cancelled_at"
+                "created_at, updated_at, assigned_at, cancelled_at, broadcast_mode, quotation_deadline"
             )
             .eq("retailer_id", retailer["retailer_id"])
             .order("created_at", desc=True)
@@ -454,6 +456,15 @@ async def get_retailer_request_detail(
             if off_rows:
                 req["active_offer"] = off_rows[0]
 
+        if req.get("broadcast_mode") == "parallel":
+            quotes = sb.table("manufacturing_quotes").select("*").eq("request_id", req["id"]).order("created_at").execute().data or []
+            ids = list({q["wholesaler_id"] for q in quotes})
+            businesses = sb.table("wholesalers").select("id,business_name,city,state").in_("id", ids).execute().data if ids else []
+            by_id = {w["id"]: w for w in businesses}
+            for quote in quotes:
+                quote["wholesaler"] = by_id.get(quote["wholesaler_id"])
+            req["quotes"] = quotes
+
         # Accepted quote details if assigned
         if req.get("state") == "assigned" and req.get("accepted_quote_id"):
             quote_rows = (
@@ -543,7 +554,7 @@ async def list_wholesaler_offers(
                 .select(
                     "id, category, min_weight_grams, max_weight_grams, material, purity, "
                     "gemstone_preference, quantity, making_budget_mode, making_budget_amount, "
-                    "currency, delivery_needed_date, notes, state"
+                    "currency, delivery_needed_date, notes, state, broadcast_mode, quotation_deadline"
                 )
                 .in_("id", req_ids)
                 .execute()
@@ -566,7 +577,7 @@ async def list_wholesaler_offers(
             off["request"] = requests_map.get(off["request_id"])
             off["image_url"] = assets_map.get(off["request_id"])
             # Compute authoritative remaining seconds
-            if off.get("status") == "active" and off.get("expires_at"):
+            if off.get("status") in ("active", "open") and off.get("expires_at"):
                 exp_raw = off["expires_at"]
                 if isinstance(exp_raw, str):
                     exp = datetime.fromisoformat(exp_raw.replace("Z", "+00:00"))
@@ -639,7 +650,7 @@ async def get_wholesaler_offer_detail(
             offer["asset_metadata"] = asset_rows[0]
 
         # Calculate authoritative remaining countdown
-        if offer.get("status") == "active" and offer.get("expires_at"):
+        if offer.get("status") in ("active", "open") and offer.get("expires_at"):
             exp = datetime.fromisoformat(offer["expires_at"].replace("Z", "+00:00"))
             rem = max(0, int((exp - now).total_seconds()))
             offer["remaining_seconds"] = rem
@@ -649,7 +660,7 @@ async def get_wholesaler_offer_detail(
             offer["remaining_seconds"] = 0
 
         # Quote if already accepted
-        if offer.get("status") == "accepted":
+        if offer.get("status") in ("accepted", "quoted", "not_selected", "cancelled"):
             q_rows = (
                 sb.table("manufacturing_quotes")
                 .select("*")
@@ -672,10 +683,10 @@ async def get_wholesaler_offer_detail(
 
 class AcceptOfferPayload(BaseModel):
     making_charge_mode: str = Field(..., pattern="^(per_gram|fixed_total|percentage)$")
-    making_charge_amount: float = Field(..., gt=0)
-    metal_estimate_amount: Optional[float] = 0.0
-    gemstone_estimate_amount: Optional[float] = 0.0
-    other_estimate_amount: Optional[float] = 0.0
+    making_charge_amount: float = Field(..., gt=0, allow_inf_nan=False)
+    metal_estimate_amount: Optional[float] = Field(default=0.0, ge=0, allow_inf_nan=False)
+    gemstone_estimate_amount: Optional[float] = Field(default=0.0, ge=0, allow_inf_nan=False)
+    other_estimate_amount: Optional[float] = Field(default=0.0, ge=0, allow_inf_nan=False)
     proposed_delivery_date: date
     comments: Optional[str] = Field(default=None, max_length=2000)
     expected_version: Optional[int] = None
@@ -750,6 +761,42 @@ async def accept_manufacturing_offer(
         return rpc_res
 
     return await asyncio.to_thread(_accept)
+
+
+
+def _broadcast_result(result):
+    if result and result.get("ok"):
+        return result
+    error = (result or {}).get("error", "FAILED")
+    code = 404 if error == "NOT_FOUND" else 403 if error in ("UNAUTHORIZED", "FORBIDDEN") else 422 if error in ("INVALID_QUOTE", "INVALID_REASON") else 409
+    raise HTTPException(code, (result or {}).get("message", "Could not complete this action."))
+
+
+@router.post("/wholesaler/manufacturing-offers/{offer_id}/quotes")
+async def submit_manufacturing_quote(offer_id: uuid.UUID, payload: AcceptOfferPayload,
+                                    wholesaler: dict = Depends(require_verified_wholesaler)):
+    """Submit one quote per invitation; never assigns the project. RPC retries are atomic."""
+    params = {"p_offer_id": str(offer_id), "p_making_charge_mode": payload.making_charge_mode,
+              "p_making_charge_amount": payload.making_charge_amount,
+              "p_metal_estimate_amount": payload.metal_estimate_amount or 0,
+              "p_gemstone_estimate_amount": payload.gemstone_estimate_amount or 0,
+              "p_other_estimate_amount": payload.other_estimate_amount or 0,
+              "p_proposed_delivery_date": payload.proposed_delivery_date.isoformat(),
+              "p_comments": payload.comments.strip() if payload.comments else None,
+              "p_expected_version": payload.expected_version}
+    return await asyncio.to_thread(lambda: _broadcast_result(wholesaler["client"].rpc("manufacturing_quote_submit", params).execute().data))
+
+
+class AwardQuotePayload(BaseModel):
+    quote_id: uuid.UUID
+
+
+@router.post("/retailer/manufacturing-requests/{request_id}/award")
+async def award_manufacturing_quote(request_id: uuid.UUID, payload: AwardQuotePayload,
+                                   retailer: dict = Depends(require_verified_retailer)):
+    """Retailer chooses the supplier; request locking guarantees exactly one winner."""
+    return await asyncio.to_thread(lambda: _broadcast_result(retailer["client"].rpc(
+        "manufacturing_quote_award", {"p_request_id": str(request_id), "p_quote_id": str(payload.quote_id)}).execute().data))
 
 
 class DeclineOfferPayload(BaseModel):
@@ -851,6 +898,7 @@ async def manufacturing_health():
     """Operational health probe for the manufacturing queue and scheduler."""
     return {
         "status": "healthy",
+        "broadcast_modes": ["sequential", "parallel"],
         "last_sweep_at": scheduler.last_sweep_at.isoformat() if scheduler.last_sweep_at else None,
         "swept_count": scheduler.swept_count,
         "advanced_count": scheduler.advanced_count,

@@ -63,13 +63,6 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""  # service role bypasses RLS, keep this secret
 
-    # Apple push credentials remain server-only and optional.
-    APNS_KEY_ID: str = ""
-    APNS_TEAM_ID: str = ""
-    APNS_BUNDLE_ID: str = "com.jewelindia.app"
-    APNS_PRIVATE_KEY: str = ""
-    APNS_ENVIRONMENT: str = "development"
-
     # AI Models
     REVE_API_KEY: str = ""
     REVE_PROMPT: str = ""
@@ -256,8 +249,14 @@ class Settings(BaseSettings):
     # input token budget caps out around 1536 tokens, so sending larger buys
     # nothing but latency.
     OPENAI_IMAGE_MAX_REF_EDGE: int = 1024
-    OPENAI_IMAGE_TIMEOUT_SECONDS: float = 180.0
     CHAMAK_OPENAI_PROMPT_VERSION: str = "v2.0-chamak-openai"
+
+    # Apple Push Notification service (APNs)
+    APNS_KEY_ID: str = ""
+    APNS_TEAM_ID: str = ""
+    APNS_BUNDLE_ID: str = "com.jewelindia.app"
+    APNS_PRIVATE_KEY: str = ""  # Raw .p8 PEM string, file path, or base64
+    APNS_ENVIRONMENT: str = "development"  # "development" or "production"
 
     class Config:
         env_file = ".env"

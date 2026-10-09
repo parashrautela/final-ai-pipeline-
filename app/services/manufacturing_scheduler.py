@@ -143,10 +143,20 @@ apns_service = APNsService()
 
 def format_notification(kind: str, payload: dict) -> tuple[str, str]:
     """Return appropriate user-facing title and body for notification kinds."""
+    if kind == "MANUFACTURING_ENQUIRY_CANCELLED":
+        return ("Enquiry Cancelled", "The retailer cancelled this enquiry. No further response is needed.")
+    if kind == "MANUFACTURING_QUOTE_RECEIVED":
+        return ("New Supplier Quote", "A wholesaler submitted a quote. Compare it with your other quotes.")
+    if kind == "MANUFACTURING_QUOTE_AWARDED":
+        return ("Your Quote Was Selected", "The retailer selected your quote. Open the enquiry to review the agreed terms.")
+    if kind == "MANUFACTURING_ENQUIRY_CLOSED":
+        return ("Enquiry Closed", "The retailer has selected a supplier for this enquiry.")
+    if kind == "MANUFACTURING_QUOTES_READY":
+        return ("Quotation Window Closed", "Open your enquiry to review the supplier responses.")
     if kind == "NEW_MANUFACTURING_OFFER":
         return (
             "New Custom Jewellery Request",
-            "You have a new exclusive manufacturing request. Tap to review specs and quote."
+            "A retailer is seeking quotes for custom jewellery. Tap to review the requirements."
         )
     elif kind == "MANUFACTURING_REQUEST_ASSIGNED":
         return (
@@ -220,6 +230,9 @@ class ManufacturingScheduler:
         def _reconcile():
             sb = get_supabase()
             adv_count = 0
+
+            # Close parallel quotation windows without assigning a supplier.
+            sb.rpc("manufacturing_close_quotation_windows", {"p_batch_size": 25}).execute()
 
             # 1. Sweep expired offers atomically via SKIP LOCKED database procedure
             try:
