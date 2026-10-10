@@ -51,6 +51,7 @@ from app.services.chamak import (
     set_source_urls,
     validate_set_manifest,
 )
+from app.services.ai import nanobana_client
 from app.services.backfill import backfill_on_startup
 from app.services.pipeline import process_product_image
 from app.services.storage import upload_raw_image
@@ -421,6 +422,11 @@ async def health_check(request: Request):
         "status": "ok",
         "environment": settings.ENVIRONMENT,
         "capabilities": {"category_variant_scenes": True},
+        "image_generation": {
+            "provider": "nanobananaapi.ai",
+            "model": nanobana_client.MODEL,
+            "resolution": nanobana_client.RESOLUTION,
+        },
     }
 
 

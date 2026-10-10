@@ -128,12 +128,9 @@ class ReveClient:
 class NanobanaClient:
     """Client for Nanobana scene enhancement API."""
 
-    # Using generate-pro endpoint for image-to-image editing at 2K.
-    # 2K is the deliberate choice here, not 4K: 4K carries a real credit
-    # premium over 2K on this API for the same image, and 2K is judged the
-    # better tradeoff against IMAGE_GENERATION_COUNT variants per product —
-    # more images at 2K beats fewer at 4K for the same spend.
-    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
+    MODEL = "nano-banana-2"
+    RESOLUTION = "2K"
+    _GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-2"
     _STATUS_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/record-info"
 
     def __init__(self) -> None:
@@ -142,67 +139,35 @@ class NanobanaClient:
             "Content-Type": "application/json",
         }
 
-    # Hard API limit, verified against the live endpoint: generate-pro answers
-    # 422 "Prompt length must be between 3 and 5000" above this. Measured
-    # exactly — 5000 is accepted, 5001 is rejected. This is a limit of the
-    # nanobananaapi.ai wrapper, NOT of the underlying model (which takes a 64K
-    # token context), so it cannot be raised by switching model or resolution.
-    #
-    # NOTE: the composed base + category module + scene currently runs ~18k
-    # chars, so ~72% of every prompt is being discarded here. Truncation is a
-    # safety net, not a solution — the prompt_modules rows need to be rewritten
-    # to fit inside this budget for the category rules to actually reach the model.
-    _MAX_PROMPT_CHARS = 5000
+    # Generate-2 supports 20,000 characters; never discard product/scene rules.
+    _MAX_PROMPT_CHARS = 20000
 
-    # Truncation keeps this many trailing chars. `pipeline.py` appends the
-    # per-variant SCENE directive LAST (longest is ~226 chars), so a plain
-    # head-slice would delete the only text that differs between variants and
-    # render 4 identical images.
-    _PROMPT_TAIL_CHARS = 400
+    def _validate_prompt(self, prompt: str) -> None:
+        if not 3 <= len(prompt) <= self._MAX_PROMPT_CHARS:
+            raise ValueError(
+                f"Nano Banana 2 prompt must be 3–{self._MAX_PROMPT_CHARS} characters"
+            )
 
     async def enhance_image(
         self, image_url: str, *, prompt: str | None = None
     ) -> bytes:
-        """Send image URL to Nanobana Pro, return 2K enhanced image bytes."""
+        """Send a source image to Nano Banana 2 and return a 2K image."""
         active_prompt = prompt if prompt is not None else settings.NANOBANA_PROMPT
-
-        # Keep the head and the tail so the trailing SCENE directive survives —
-        # see _PROMPT_TAIL_CHARS. The elision marker counts against the budget,
-        # so subtract it too: an off-by-one here is a 422 from the API.
-        if len(active_prompt) > self._MAX_PROMPT_CHARS:
-            elision = "\n\n[...]\n\n"
-            head_chars = (
-                self._MAX_PROMPT_CHARS - self._PROMPT_TAIL_CHARS - len(elision)
-            )
-            logger.warning(
-                f"Prompt is {len(active_prompt)} chars, over the {self._MAX_PROMPT_CHARS} "
-                f"limit — keeping the first {head_chars} and last {self._PROMPT_TAIL_CHARS}. "
-                f"Category-module rules in the middle are being dropped."
-            )
-            active_prompt = (
-                active_prompt[:head_chars]
-                + elision
-                + active_prompt[-self._PROMPT_TAIL_CHARS :]
-            )
-
-        # generate-pro requires "resolution" (not "image_size" — that belongs
-        # to the plain /generate endpoint and 422s here). Value comes from
-        # settings.nanobana_resolution (NANOBANA_IMAGE_SIZE on Railway) rather
-        # than a literal — see the class-level comment for why 2K is the
-        # default.
+        self._validate_prompt(active_prompt)
         payload = {
             "prompt": active_prompt,
-            "type": "IMAGETOIAMGE",
             "imageUrls": [image_url],
-            "resolution": settings.nanobana_resolution,
-            "callBackUrl": "https://api.nanobananaapi.ai/callback",  # Required by API
+            "aspectRatio": "1:1",
+            "resolution": self.RESOLUTION,
+            "googleSearch": False,
+            "outputFormat": "png",
         }
         try:
             # Step 1: Submit the generation task and get back a task ID.
             async with httpx.AsyncClient(timeout=60.0) as submit_client:
                 logger.info(
                     f"Nanobana request — URL: {self._GENERATE_URL}, "
-                    f"payload: {payload}"
+                    f"model={self.MODEL}, resolution={self.RESOLUTION}, prompt={len(active_prompt)} chars"
                 )
                 response = await _request_with_retry(
                     submit_client,
@@ -227,110 +192,18 @@ class NanobanaClient:
 
             logger.info(f"Nanobana task queued — taskId={task_id}")
 
-            # Step 2: Poll the status endpoint until finished or timed out.
-            # Nanobana is async — generation typically takes 10-40 seconds.
-            max_polls = 60
-            poll_interval = 5
-
-            for i in range(max_polls):
-                await asyncio.sleep(poll_interval)
-
-                async with httpx.AsyncClient(timeout=30.0) as poll_client:
-                    status_response = await _request_with_retry(
-                        poll_client,
-                        "GET",
-                        f"{self._STATUS_URL}?taskId={task_id}",
-                        headers=self._headers,
-                        max_retries=2,
-                    )
-                    status_data = status_response.json()
-
-                # Log every 5th poll so you can see it's alive without flooding
-                if i % 5 == 0:
-                    elapsed = (i + 1) * poll_interval
-                    logger.info(
-                        f"Nanobana waiting... {elapsed}s elapsed (poll {i + 1}/{max_polls})  taskId={task_id}"
-                    )
-
-                data = status_data.get("data") or {}
-                success = data.get("successFlag") in (1, "1") or status_data.get(
-                    "successFlag"
-                ) in (1, "1")
-
-                if success:
-                    # The result URL can appear in several places depending on the API version.
-                    res_url = (
-                        (data.get("response") or {}).get("resultImageUrl")
-                        or data.get("resultImageUrl")
-                        or data.get("result_image_url")
-                        or data.get("imageUrl")
-                        or data.get("image_url")
-                        or status_data.get("resultImageUrl")
-                        or status_data.get("imageUrl")
-                    )
-
-                    if not res_url:
-                        logger.error(
-                            f"Nanobana task {task_id} succeeded but no image URL. Response: {status_data}"
-                        )
-                        raise ValueError(
-                            f"Nanobana task {task_id} succeeded but no URL. Response: {status_data}"
-                        )
-
-                    logger.info(
-                        f"Nanobana task {task_id} complete — result URL: {res_url}"
-                    )
-
-                    # Step 3: Download the generated image from the result URL.
-                    async with httpx.AsyncClient(timeout=120.0) as dl_client:
-                        img_resp = await dl_client.get(res_url, follow_redirects=True)
-                        img_resp.raise_for_status()
-                        logger.info(
-                            f"Downloaded Nanobana result: {len(img_resp.content)} bytes"
-                        )
-                        return img_resp.content
-
-                fail_flag = data.get("failFlag") or status_data.get("failFlag")
-                if fail_flag in (1, "1"):
-                    raise RuntimeError(
-                        f"Nanobana task {task_id} failed. Response: {status_data}"
-                    )
-
-            raise TimeoutError(
-                f"Nanobana task {task_id} did not complete within {max_polls * poll_interval}s"
-            )
+            return await self._await_task(task_id, label="image")
 
         except Exception as exc:
             logger.error(f"Nanobana enhance_image failed: {exc}", exc_info=True)
             raise
 
-    # ── Set Creation ────────────────────────────────────────────────────────
-    # Deliberately separate from enhance_image() above rather than a flag on
-    # it, for two reasons:
-    #
-    # 1. Different endpoint. enhance_image uses /generate-pro; this uses plain
-    #    /generate, which NANOBANA_API_REFERENCE.md measures at ~2 credits per
-    #    image against generate-pro's 9-12. Set Creation does not need the pro
-    #    endpoint, and switching enhance_image over is a live-pricing change to
-    #    the product pipeline that belongs in its own reviewed commit.
-    # 2. Different input shape. This sends MULTIPLE imageUrls; enhance_image
-    #    has only ever sent one.
-    #
-    # Verified live against the API on 2026-08-29: two URLs in `imageUrls`
-    # are accepted, both are echoed back in the task's paramJson, and both
-    # appear faithfully in the output image.
-    _SET_GENERATE_URL = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
-
-    # The API caps prompts the same way on both endpoints.
-    _SET_MAX_PROMPT_CHARS = 5000
+    # Set Creation sends multiple source images to the same model.
+    _SET_GENERATE_URL = _GENERATE_URL
+    _SET_MAX_PROMPT_CHARS = _MAX_PROMPT_CHARS
 
     async def _await_task(self, task_id: str, *, label: str = "task") -> bytes:
-        """Poll record-info until the task finishes, then download the result.
-
-        Mirrors the polling in enhance_image(). Kept as its own method so the
-        live product/fusion path is not touched while Set Creation is being
-        proven; fold the two together once it is.
-        """
+        """Poll record-info until the task finishes, then download the result."""
         max_polls = 60
         poll_interval = 5
 
@@ -355,11 +228,16 @@ class NanobanaClient:
                     f"(poll {i + 1}/{max_polls}) taskId={task_id}"
                 )
 
-            if data.get("successFlag") in (1, "1"):
+            flag = data.get("successFlag", status_data.get("successFlag"))
+            if flag in (1, "1"):
                 res_url = (
                     (data.get("response") or {}).get("resultImageUrl")
                     or data.get("resultImageUrl")
                     or data.get("imageUrl")
+                    or data.get("result_image_url")
+                    or data.get("image_url")
+                    or status_data.get("resultImageUrl")
+                    or status_data.get("imageUrl")
                 )
                 if not res_url:
                     raise ValueError(
@@ -372,7 +250,7 @@ class NanobanaClient:
                     logger.info(f"Downloaded Nanobana {label} result: {len(img.content)} bytes")
                     return img.content
 
-            if data.get("failFlag") in (1, "1") or status_data.get("failFlag") in (1, "1"):
+            if flag in (2, "2", 3, "3") or data.get("failFlag") in (1, "1") or status_data.get("failFlag") in (1, "1"):
                 raise RuntimeError(
                     f"Nanobana {label} {task_id} failed: "
                     f"{data.get('errorMessage') or status_data}"
@@ -390,7 +268,7 @@ class NanobanaClient:
         prompt: str,
         image_size: str = "2:3",
         output_count: int | None = None,
-        resolution: str = "4K",
+        resolution: str = "2K",
     ) -> list[bytes]:
         """Compose several source images into configurable staged photographs.
 
@@ -402,30 +280,29 @@ class NanobanaClient:
         hangs position-dependent instructions off both, so the caller must pass
         them in the order the prompt describes.
         """
-        if not image_urls:
-            raise ValueError("compose_set requires at least one image URL")
+        if not 1 <= len(image_urls) <= 14:
+            raise ValueError("compose_set requires between 1 and 14 image URLs")
 
         active_prompt = prompt
-        if len(active_prompt) > self._SET_MAX_PROMPT_CHARS:
-            logger.warning(
-                f"Set prompt is {len(active_prompt)} chars, over the "
-                f"{self._SET_MAX_PROMPT_CHARS} limit — truncating."
-            )
-            active_prompt = active_prompt[: self._SET_MAX_PROMPT_CHARS]
+        self._validate_prompt(active_prompt)
+        # Keep the argument compatible with existing callers, but the selected
+        # model policy is 2K even if Railway still supplies a legacy 4K setting.
+        if (resolution or "").upper() != self.RESOLUTION:
+            logger.warning("Ignoring legacy set resolution; Nano Banana 2 outputs use 2K")
 
         count = max(1, min(int(output_count or settings.set_creation_output_count), 4))
 
         async def generate_one(index: int) -> bytes:
             payload = {
                 "prompt": active_prompt,
-                "type": "IMAGETOIAMGE",
                 "imageUrls": image_urls,
-                "resolution": (resolution or "4K").upper(),
+                "resolution": self.RESOLUTION,
                 "aspectRatio": image_size,
-                "callBackUrl": "https://api.nanobananaapi.ai/callback",
+                "googleSearch": False,
+                "outputFormat": "png",
             }
             logger.info(
-                f"Nanobana Pro set composition {index + 1}/{count} — "
+                f"Nano Banana 2 set composition {index + 1}/{count} — "
                 f"resolution={payload['resolution']}, image_size={image_size}, "
                 f"prompt={len(active_prompt)} chars"
             )
@@ -443,8 +320,8 @@ class NanobanaClient:
             data_obj = task_data.get("data") or {}
             task_id = task_data.get("taskId") or data_obj.get("taskId") or data_obj.get("id")
             if not task_id:
-                raise ValueError(f"Failed to get taskId from Nanobana Pro: {task_data}")
-            logger.info(f"Nanobana Pro set task queued — taskId={task_id}")
+                raise ValueError(f"Failed to get taskId from Nano Banana 2: {task_data}")
+            logger.info(f"Nano Banana 2 set task queued — taskId={task_id}")
             return await self._await_task(task_id, label=f"set {index + 1}/{count}")
 
         return await asyncio.gather(*(generate_one(i) for i in range(count)))

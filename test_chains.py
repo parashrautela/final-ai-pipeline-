@@ -95,7 +95,7 @@ class ChainsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_over_budget_scenes_rejected_before_paid_generation(self):
         from app.services.pipeline import process_product_image
-        composed = ComposedPromptResult("X" * 5000, 2, 2, "chain", "chain", ["SCENE 1 — DETAIL"] * 4)
+        composed = ComposedPromptResult("X" * 20000, 2, 2, "chain", "chain", ["SCENE 1 — DETAIL"] * 4)
         with patch("app.services.pipeline.prompt_composer.get_composed_prompt", new=AsyncMock(return_value=composed)), \
              patch("app.services.pipeline._generate_variant", new=AsyncMock()) as generate:
             with self.assertRaisesRegex(ValueError, "character limit"):

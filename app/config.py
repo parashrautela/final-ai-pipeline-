@@ -107,28 +107,16 @@ class Settings(BaseSettings):
             return 1
         return max(1, min(self.IMAGE_GENERATION_COUNT, 4))
 
-    # Nanobana generate-pro "resolution" value. Named to match the
-    # NANOBANA_IMAGE_SIZE env var already set on Railway (to "2k") — that var
-    # existed before any code read it either; ai.py had "2K" hardcoded.
+    # Nano Banana 2 is fixed at 2K for product, Chamak 1 and set images.
+    # Retain legacy env names for backwards-compatible deployment parsing.
     NANOBANA_IMAGE_SIZE: str = "2K"
-
-    # Set Creation uses the Pro image endpoint. These are intentionally
-    # deployment-configurable so Railway can tune output volume and quality
-    # without an app release.
     SET_CREATION_OUTPUT_COUNT: int = 4
-    SET_CREATION_RESOLUTION: str = "4K"
+    SET_CREATION_RESOLUTION: str = "2K"
     SET_CREATION_IMAGE_SIZE: str = "2:3"
 
     @property
     def nanobana_resolution(self) -> str:
-        value = (self.NANOBANA_IMAGE_SIZE or "").strip().upper()
-        if value not in ("1K", "2K", "4K"):
-            _log.warning(
-                f"NANOBANA_IMAGE_SIZE={self.NANOBANA_IMAGE_SIZE!r} is not one of "
-                f"1K/2K/4K — falling back to 2K"
-            )
-            return "2K"
-        return value
+        return "2K"
 
     @property
     def set_creation_output_count(self) -> int:
@@ -136,8 +124,7 @@ class Settings(BaseSettings):
 
     @property
     def set_creation_resolution(self) -> str:
-        value = (self.SET_CREATION_RESOLUTION or "").strip().upper()
-        return value if value in ("1K", "2K", "4K") else "4K"
+        return "2K"
 
     @property
     def set_creation_image_size(self) -> str:

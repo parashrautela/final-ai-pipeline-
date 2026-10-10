@@ -35,13 +35,18 @@ Notes:
 
 ### Set Creation Railway variables
 
-Set Creation uses Nano Banana Pro and reads these deployment variables:
+Product images, Chamak 1 and Set Creation use Nano Banana 2 (`generate-2`) at
+2K. Chamak 2 retains its OpenAI renderer. Set Creation reads these variables:
 
 ```text
 SET_CREATION_OUTPUT_COUNT=4
-SET_CREATION_RESOLUTION=4K
+SET_CREATION_RESOLUTION=2K
 SET_CREATION_IMAGE_SIZE=2:3
 ```
+
+Resolution is fixed at 2K; legacy 4K environment overrides are ignored.
+Prompts are preserved up to the provider’s 20,000-character limit; longer
+prompts fail before submission instead of silently losing category rules.
 
 `SET_CREATION_OUTPUT_COUNT` is clamped to 1–4 and defaults to 4. Run
 `migrations/011_set_creation_outputs.sql` before enabling multiple outputs so
