@@ -587,6 +587,48 @@ SET_MIN_PIECES = 2
 SET_MAX_PIECES = 4
 _PIECE_WORDS = {2: "two", 3: "three", 4: "four"}
 
+CANONICAL_JEWELLERY_TYPES = {
+    "chain": {"chain", "chains", "neck chain", "neck chains"},
+    "necklace": {"necklace", "necklaces"},
+    "ring": {"ring", "rings"},
+    "earrings": {"earring", "earrings", "jhumka", "jhumkas"},
+    "bangle": {"bangle", "bangles"},
+    "pendant": {"pendant", "pendants"},
+    "nosepin": {"nosepin", "nosepins", "nose pin", "nose pins"},
+    "haram": {"haram", "harams"},
+    "mangalsutra": {"mangalsutra", "mangalsutras"},
+}
+
+
+def canonicalize_jewellery_type(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    val = raw.strip().lower()
+    for canonical, synonyms in CANONICAL_JEWELLERY_TYPES.items():
+        if val == canonical or val in synonyms:
+            return canonical
+    return None
+
+
+def validate_set_manifest(manifest: Any) -> list[str]:
+    """Validate Set Creation manifest for piece count and mutually distinct types."""
+    if not manifest or not isinstance(manifest, list):
+        return []
+    if len(manifest) < SET_MIN_PIECES or len(manifest) > SET_MAX_PIECES:
+        raise ValueError(f"Set Creation manifest must contain {SET_MIN_PIECES} to {SET_MAX_PIECES} pieces.")
+
+    types: list[str] = []
+    for item in manifest:
+        raw_type = item.get("canonical_type") or item.get("jewellery_type")
+        c_type = canonicalize_jewellery_type(raw_type) or (raw_type.strip().lower() if raw_type else None)
+        if not c_type:
+            raise ValueError("Every piece in a set must have a declared jewellery type.")
+        if c_type in types:
+            raise ValueError(f"Duplicate jewellery type '{c_type}' detected. A set cannot contain multiple items of the same jewellery type.")
+        types.append(c_type)
+    return types
+
+
 
 def _widen_set_prompt(text: str, pieces: int) -> str:
     """Rewrite the two-piece prompt for three or four pieces.

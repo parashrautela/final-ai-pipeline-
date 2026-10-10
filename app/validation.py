@@ -14,6 +14,7 @@ from typing import Annotated, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.jewellery_types import normalize_chain_type
 
 # === SECURITY CONSTANTS ===
 
@@ -223,7 +224,7 @@ class ProductCreate(BaseModel):
             field_name="jewellery_type",
             allow_empty=False,
         )
-        return sanitized.lower()
+        return normalize_chain_type(sanitized)
 
 
 class ProductId(BaseModel):
@@ -282,7 +283,10 @@ async def validate_jewellery_type_dynamic(jewellery_type: str) -> str:
         allow_empty=False,
     ).lower()
 
+    sanitized = normalize_chain_type(sanitized)
     valid_types = await prompt_composer.get_valid_jewellery_types()
+    if sanitized == "chain" and "chain" not in valid_types:
+        raise ValidationError("Chains image generation is not available until the chain prompt is activated.")
     if sanitized not in valid_types:
         formatted_list = ", ".join(sorted(valid_types))
         raise ValidationError(

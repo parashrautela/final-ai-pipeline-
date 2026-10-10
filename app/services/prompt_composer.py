@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import time
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 from app.db.repository import fetch_active_prompt_modules
 from app.logging import logger
+from app.jewellery_types import normalize_chain_type
 
 # Cache duration in seconds (1 minute TTL)
 CACHE_TTL_SECONDS = 60.0
@@ -86,6 +88,7 @@ class ComposedPromptResult:
     category_module_version: int
     jewellery_type_requested: str
     jewellery_type_matched: str
+    variant_scenes: Optional[list[str]] = None
 
 
 class PromptComposer:
@@ -114,8 +117,11 @@ class PromptComposer:
                 categories: dict[str, PromptModuleItem] = {}
 
                 for m in modules:
+                    # An empty authoring row must never enable paid generation.
+                    if not (m.get("prompt_text") or "").strip():
+                        continue
                     m_type = (m.get("module_type") or "").strip().lower()
-                    j_type = (m.get("jewellery_type") or "").strip().lower() if m.get("jewellery_type") else None
+                    j_type = normalize_chain_type(m["jewellery_type"]) if m.get("jewellery_type") else None
                     item = PromptModuleItem(
                         id=str(m.get("id", "")),
                         module_type=m_type,
@@ -193,9 +199,12 @@ class PromptComposer:
             version=1,
         )
 
-        norm_type = (jewellery_type or "other").strip().lower()
+        norm_type = normalize_chain_type(jewellery_type or "other")
         category_item = self._cached_categories.get(norm_type)
         matched_type = norm_type
+
+        if not category_item and norm_type == "chain":
+            raise ValueError("Chains image generation is not available until the chain prompt is activated.")
 
         if not category_item:
             category_item = self._cached_categories.get("other")
@@ -214,6 +223,19 @@ class PromptComposer:
 
         base_text = base_item.prompt_text
         cat_text = category_item.prompt_text
+        variant_scenes = None
+        if norm_type == "chain" and "\n\nSCENE " in cat_text:
+            # Store authorable plain text in prompt_modules without a schema
+            # change. Only the selected scene is sent for each generation.
+            sections = re.split(r"\n\n(?=SCENE \d+ [—-] )", cat_text)
+            rules, scenes = sections[0], sections[1:]
+            if len(scenes) != 4 or any(
+                not scene.startswith(f"SCENE {index} — ")
+                for index, scene in enumerate(scenes, 1)
+            ):
+                raise ValueError("Chain prompt must define exactly four ordered scenes.")
+            cat_text = rules
+            variant_scenes = scenes
 
         desc = item_description.strip() or (norm_type if norm_type != "other" else "jewellery")
         if "{item_description}" in base_text:
@@ -229,6 +251,7 @@ class PromptComposer:
             category_module_version=category_item.version,
             jewellery_type_requested=norm_type,
             jewellery_type_matched=matched_type,
+            variant_scenes=variant_scenes,
         )
 
 

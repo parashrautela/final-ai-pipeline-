@@ -1,5 +1,6 @@
 import logging
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 _log = logging.getLogger(__name__)
@@ -63,13 +64,6 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""  # service role bypasses RLS, keep this secret
 
-    # Apple push credentials remain server-only and optional.
-    APNS_KEY_ID: str = ""
-    APNS_TEAM_ID: str = ""
-    APNS_BUNDLE_ID: str = "com.jewelindia.app"
-    APNS_PRIVATE_KEY: str = ""
-    APNS_ENVIRONMENT: str = "development"
-
     # AI Models
     REVE_API_KEY: str = ""
     REVE_PROMPT: str = ""
@@ -113,28 +107,16 @@ class Settings(BaseSettings):
             return 1
         return max(1, min(self.IMAGE_GENERATION_COUNT, 4))
 
-    # Nanobana generate-pro "resolution" value. Named to match the
-    # NANOBANA_IMAGE_SIZE env var already set on Railway (to "2k") — that var
-    # existed before any code read it either; ai.py had "2K" hardcoded.
+    # Nano Banana 2 is fixed at 2K for product, Chamak 1 and set images.
+    # Retain legacy env names for backwards-compatible deployment parsing.
     NANOBANA_IMAGE_SIZE: str = "2K"
-
-    # Set Creation uses the Pro image endpoint. These are intentionally
-    # deployment-configurable so Railway can tune output volume and quality
-    # without an app release.
     SET_CREATION_OUTPUT_COUNT: int = 4
-    SET_CREATION_RESOLUTION: str = "4K"
+    SET_CREATION_RESOLUTION: str = "2K"
     SET_CREATION_IMAGE_SIZE: str = "2:3"
 
     @property
     def nanobana_resolution(self) -> str:
-        value = (self.NANOBANA_IMAGE_SIZE or "").strip().upper()
-        if value not in ("1K", "2K", "4K"):
-            _log.warning(
-                f"NANOBANA_IMAGE_SIZE={self.NANOBANA_IMAGE_SIZE!r} is not one of "
-                f"1K/2K/4K — falling back to 2K"
-            )
-            return "2K"
-        return value
+        return "2K"
 
     @property
     def set_creation_output_count(self) -> int:
@@ -142,8 +124,7 @@ class Settings(BaseSettings):
 
     @property
     def set_creation_resolution(self) -> str:
-        value = (self.SET_CREATION_RESOLUTION or "").strip().upper()
-        return value if value in ("1K", "2K", "4K") else "4K"
+        return "2K"
 
     @property
     def set_creation_image_size(self) -> str:
@@ -252,12 +233,20 @@ class Settings(BaseSettings):
     # aspect <= 3:1, max edge 3840) but sits in OpenAI's "experimental" band
     # above 2560x1440. Drop to "1536x1536" if the API rejects it.
     OPENAI_IMAGE_SIZE: str = "2048x2048"
+    # Image edits return synchronously; allow up to five minutes per request.
+    OPENAI_IMAGE_TIMEOUT_SECONDS: float = Field(default=300.0, gt=0)
     # Reference images are downscaled to this long edge before upload. The
     # input token budget caps out around 1536 tokens, so sending larger buys
     # nothing but latency.
     OPENAI_IMAGE_MAX_REF_EDGE: int = 1024
-    OPENAI_IMAGE_TIMEOUT_SECONDS: float = 180.0
     CHAMAK_OPENAI_PROMPT_VERSION: str = "v2.0-chamak-openai"
+
+    # Apple Push Notification service (APNs)
+    APNS_KEY_ID: str = ""
+    APNS_TEAM_ID: str = ""
+    APNS_BUNDLE_ID: str = "com.jewelindia.app"
+    APNS_PRIVATE_KEY: str = ""  # Raw .p8 PEM string, file path, or base64
+    APNS_ENVIRONMENT: str = "development"  # "development" or "production"
 
     class Config:
         env_file = ".env"

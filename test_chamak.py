@@ -129,13 +129,15 @@ class TestChamakPipeline(unittest.TestCase):
             with patch("app.services.chamak.fetch_chamak_generation", new_callable=AsyncMock) as mock_fetch, \
                  patch("app.services.chamak.update_chamak_generation", new_callable=AsyncMock) as mock_update, \
                  patch("app.services.chamak.fetch_image_bytes_and_content_type", new_callable=AsyncMock) as mock_img, \
-                 patch("app.services.chamak.call_openai_vision_analysis", new_callable=AsyncMock) as mock_vision:
+                 patch("app.services.chamak.call_openai_vision_analysis", new_callable=AsyncMock) as mock_vision, \
+                 patch("app.services.chamak._refund_failed_generation", new_callable=AsyncMock) as mock_refund:
 
                 mock_fetch.return_value = mock_row
                 mock_img.side_effect = [(b"fake_bytes_1", "image/jpeg"), (b"fake_bytes_2", "image/jpeg")]
                 mock_vision.return_value = mock_analysis
 
                 await run_stage1_vision_analysis(gen_id)
+                mock_refund.assert_awaited_once()
 
                 mock_update.assert_called_with(
                     gen_id,
@@ -189,58 +191,82 @@ class TestChamakPipeline(unittest.TestCase):
                 self.assertTrue("completed_at" in updated_fields)
 
     def test_fastapi_endpoints(self):
+        import datetime as dt
         import httpx
-        from app.main import app
+        import jwt
+        from app.main import app, limiter
+
+        owner = str(uuid4())
+        secret = "chamak-unit-test-secret-at-least-32-characters"
+        token = jwt.encode({"sub": owner, "aud": "authenticated",
+                            "exp": dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)},
+                           secret, algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "endpoint-test"}
+        charge = {"ok": True, "replayed": False, "ledger_id": str(uuid4())}
 
         async def run_endpoint_tests():
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 gen_id = str(uuid4())
 
-                # Test 1: Generation not found -> 404
-                with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as mock_fetch:
-                    mock_fetch.return_value = None
-                    resp = await client.post("/api/chamak/analyze", json={"generation_id": gen_id})
-                    self.assertEqual(resp.status_code, 404)
+                # Authentication happens before looking up a generation.
+                with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as fetch:
+                    for method, path in [("POST", "/api/chamak/analyze"),
+                                         ("POST", "/api/chamak/generate"),
+                                         ("GET", f"/api/chamak/{gen_id}")]:
+                        kwargs = {"json": {"generation_id": gen_id}} if method == "POST" else {}
+                        response = await client.request(method, path, **kwargs)
+                        self.assertEqual(response.status_code, 401)
+                    fetch.assert_not_awaited()
 
-                # Test 2: Generation found -> 202 and status analyzing
-                with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as mock_fetch, \
-                     patch("app.main.update_chamak_generation", new_callable=AsyncMock) as mock_update, \
-                     patch("app.main.run_stage1_vision_analysis", new_callable=AsyncMock) as mock_task:
+                with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as fetch:
+                    fetch.return_value = None
+                    response = await client.post("/api/chamak/analyze", headers=headers,
+                                                 json={"generation_id": gen_id})
+                    self.assertEqual(response.status_code, 404)
 
-                    mock_fetch.return_value = {"id": gen_id, "status": "queued"}
-                    resp = await client.post("/api/chamak/analyze", json={"generation_id": gen_id})
-                    self.assertEqual(resp.status_code, 202)
-                    data = resp.json()
-                    self.assertEqual(data["generation_id"], gen_id)
-                    self.assertEqual(data["status"], "analyzing")
+                # A signed-in caller cannot access another owner's generation.
+                with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as fetch:
+                    fetch.return_value = {"id": gen_id, "wholesaler_id": str(uuid4()), "status": "queued"}
+                    response = await client.post("/api/chamak/analyze", headers=headers,
+                                                 json={"generation_id": gen_id})
+                    self.assertEqual(response.status_code, 404)
 
-                # Test 3: Generate endpoint found -> 202 and status generating
-                with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as mock_fetch, \
-                     patch("app.main.update_chamak_generation", new_callable=AsyncMock) as mock_update, \
-                     patch("app.main.run_stage4_generation", new_callable=AsyncMock) as mock_gen_task:
+                for endpoint, initial, expected, task in [
+                    ("analyze", "queued", "analyzing", "run_stage1_vision_analysis"),
+                    ("generate", "awaiting_input", "generating", "run_stage4_generation"),
+                ]:
+                    with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as fetch, \
+                         patch("app.main.update_chamak_generation", new_callable=AsyncMock) as update, \
+                         patch(f"app.main.{task}", new_callable=AsyncMock) as job, \
+                         patch("app.main.spend_credits", new_callable=AsyncMock, return_value=charge) as spend, \
+                         patch("app.main.count_prior_debits", new_callable=AsyncMock, return_value=0):
+                        fetch.return_value = {"id": gen_id, "wholesaler_id": owner, "status": initial}
+                        response = await client.post(f"/api/chamak/{endpoint}", headers=headers,
+                                                     json={"generation_id": gen_id})
+                        self.assertEqual(response.status_code, 202)
+                        self.assertEqual(response.json()["generation_id"], gen_id)
+                        self.assertEqual(response.json()["status"], expected)
+                        update.assert_awaited_once_with(gen_id, {"status": expected})
+                        spend.assert_awaited_once()
+                        job.assert_awaited_once_with(gen_id, charge)
 
-                    mock_fetch.return_value = {"id": gen_id, "status": "awaiting_input"}
-                    resp = await client.post("/api/chamak/generate", json={"generation_id": gen_id})
-                    self.assertEqual(resp.status_code, 202)
-                    data = resp.json()
-                    self.assertEqual(data["generation_id"], gen_id)
-                    self.assertEqual(data["status"], "generating")
+                with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as fetch:
+                    fetch.return_value = {"id": gen_id, "wholesaler_id": owner, "status": "done",
+                                          "output_image_url": f"{owner}/{gen_id}.png"}
+                    response = await client.get(f"/api/chamak/{gen_id}", headers=headers)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["status"], "done")
+                    self.assertEqual(response.json()["output_image_url"], f"{owner}/{gen_id}.png")
 
-                # Test 4: Get status endpoint
-                with patch("app.main.fetch_chamak_generation", new_callable=AsyncMock) as mock_fetch:
-                    mock_fetch.return_value = {"id": gen_id, "status": "done", "output_image_url": f"w1/{gen_id}.png"}
-                    resp = await client.get(f"/api/chamak/{gen_id}")
-                    self.assertEqual(resp.status_code, 200)
-                    data = resp.json()
-                    self.assertEqual(data["status"], "done")
-                    self.assertEqual(data["output_image_url"], f"w1/{gen_id}.png")
+                response = await client.post("/api/chamak/analyze", headers=headers,
+                                             json={"generation_id": "invalid-uuid"})
+                self.assertEqual(response.status_code, 422)
 
-                # Test 5: Invalid UUID validation -> 422
-                resp = await client.post("/api/chamak/analyze", json={"generation_id": "invalid-uuid"})
-                self.assertEqual(resp.status_code, 422)
-
-        asyncio.run(run_endpoint_tests())
+        with patch.object(settings, "SUPABASE_JWT_SECRET", secret), \
+             patch.object(settings, "CREDITS_ENABLED", True), \
+             patch.object(limiter, "enabled", False):
+            asyncio.run(run_endpoint_tests())
 
 
 if __name__ == "__main__":

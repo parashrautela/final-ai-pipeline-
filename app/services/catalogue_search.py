@@ -11,6 +11,8 @@ import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
+from app.jewellery_types import normalize_chain_type
+
 import httpx
 import numpy as np
 import onnxruntime as ort
@@ -29,7 +31,7 @@ COLUMNS = "id,jewellery_type,is_published,raw_image_url,processed_image_url,imag
 
 def category(value: str | None) -> str:
     value = (value or "").strip().lower()
-    return {"necklaces": "necklace", "earrings": "earring", "bangles": "bangle", "pendants": "pendant"}.get(value, value)
+    return normalize_chain_type({"necklaces": "necklace", "earrings": "earring", "bangles": "bangle", "pendants": "pendant"}.get(value, value))
 
 
 def source_url(row: dict) -> str | None:
