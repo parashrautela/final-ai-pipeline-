@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -87,6 +88,7 @@ class ComposedPromptResult:
     category_module_version: int
     jewellery_type_requested: str
     jewellery_type_matched: str
+    variant_scenes: Optional[list[str]] = None
 
 
 class PromptComposer:
@@ -115,6 +117,9 @@ class PromptComposer:
                 categories: dict[str, PromptModuleItem] = {}
 
                 for m in modules:
+                    # An empty authoring row must never enable paid generation.
+                    if not (m.get("prompt_text") or "").strip():
+                        continue
                     m_type = (m.get("module_type") or "").strip().lower()
                     j_type = normalize_chain_type(m["jewellery_type"]) if m.get("jewellery_type") else None
                     item = PromptModuleItem(
@@ -218,6 +223,19 @@ class PromptComposer:
 
         base_text = base_item.prompt_text
         cat_text = category_item.prompt_text
+        variant_scenes = None
+        if norm_type == "chain" and "\n\nSCENE " in cat_text:
+            # Store authorable plain text in prompt_modules without a schema
+            # change. Only the selected scene is sent for each generation.
+            sections = re.split(r"\n\n(?=SCENE \d+ [—-] )", cat_text)
+            rules, scenes = sections[0], sections[1:]
+            if len(scenes) != 4 or any(
+                not scene.startswith(f"SCENE {index} — ")
+                for index, scene in enumerate(scenes, 1)
+            ):
+                raise ValueError("Chain prompt must define exactly four ordered scenes.")
+            cat_text = rules
+            variant_scenes = scenes
 
         desc = item_description.strip() or (norm_type if norm_type != "other" else "jewellery")
         if "{item_description}" in base_text:
@@ -233,6 +251,7 @@ class PromptComposer:
             category_module_version=category_item.version,
             jewellery_type_requested=norm_type,
             jewellery_type_matched=matched_type,
+            variant_scenes=variant_scenes,
         )
 
 

@@ -417,7 +417,11 @@ async def _start_job(
 @app.get("/health")
 @limiter.limit("30/minute")
 async def health_check(request: Request):
-    return {"status": "ok", "environment": settings.ENVIRONMENT}
+    return {
+        "status": "ok",
+        "environment": settings.ENVIRONMENT,
+        "capabilities": {"category_variant_scenes": True},
+    }
 
 
 @app.get("/api/onboarding-fee")

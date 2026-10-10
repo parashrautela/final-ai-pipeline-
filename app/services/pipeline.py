@@ -151,8 +151,13 @@ async def process_product_image(product: dict, image_count: Optional[int] = None
     # Build exact prompts per variant
     variant_prompts = [
         f"{composed.composed_prompt}\n\n{scene}"
-        for scene in VARIANT_SCENE_SETTINGS
+        for scene in (composed.variant_scenes or VARIANT_SCENE_SETTINGS)
     ]
+
+    if composed.variant_scenes and any(
+        len(prompt) > nanobana_client._MAX_PROMPT_CHARS for prompt in variant_prompts
+    ):
+        raise ValueError("Chain prompts exceed the provider character limit; shorten the prompt modules before generation.")
 
     active_prompts = variant_prompts[:variant_count]
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_VARIANTS)
