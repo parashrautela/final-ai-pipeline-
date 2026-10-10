@@ -272,10 +272,10 @@ class CreateRequestPayload(BaseModel):
     max_weight_grams: float = Field(..., gt=0, le=5000)
     material: str = Field(..., min_length=2, max_length=50)
     purity: str = Field(..., min_length=1, max_length=50)
-    gemstone_preference: str = Field(default="none", max_length=100)
+    gemstone_preference: Optional[str] = Field(default=None, max_length=100)
     quantity: int = Field(default=1, ge=1, le=1000)
-    making_budget_mode: str = Field(..., pattern="^(per_gram|fixed_total|percentage)$")
-    making_budget_amount: float = Field(..., gt=0)
+    making_budget_mode: Optional[str] = Field(default=None, pattern="^(per_gram|fixed_total|percentage)$")
+    making_budget_amount: Optional[float] = Field(default=None, gt=0)
     currency: str = Field(default="INR", max_length=10)
     metal_rate_snapshot: Optional[float] = None
     metal_rate_basis: Optional[str] = None
@@ -295,6 +295,8 @@ async def create_manufacturing_request(
 
     Stores an atomic retry key and invites all verified wholesalers with one deadline.
     """
+    if (payload.making_budget_mode is None) != (payload.making_budget_amount is None):
+        raise HTTPException(422, "Budget mode and amount must be supplied together or both omitted.")
     if payload.max_weight_grams < payload.min_weight_grams:
         raise HTTPException(422, "Maximum weight cannot be less than minimum weight.")
 
@@ -313,7 +315,7 @@ async def create_manufacturing_request(
             "p_max_weight": payload.max_weight_grams,
             "p_material": payload.material.strip(),
             "p_purity": payload.purity.strip(),
-            "p_gemstone_preference": payload.gemstone_preference.strip() or "none",
+            "p_gemstone_preference": (payload.gemstone_preference or "unspecified").strip() or "unspecified",
             "p_quantity": payload.quantity,
             "p_making_budget_mode": payload.making_budget_mode,
             "p_making_budget_amount": payload.making_budget_amount,

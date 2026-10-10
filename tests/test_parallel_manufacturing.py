@@ -44,10 +44,12 @@ async def run():
                 assert (await client.post('/api/retailer/manufacturing-requests/'+str(uuid.uuid4())+'/award',json={'quote_id':str(uuid.uuid4())})).status_code==401
                 assert (await client.post('/api/wholesaler/manufacturing-offers/'+str(uuid.uuid4())+'/quotes',json=quote)).status_code==401
                 as_ret()
-                async def create(key=None):
+                async def create(key=None, unbudgeted=False):
                     photo=io.BytesIO();Image.new('RGB',(32,32),'gold').save(photo,'JPEG')
                     asset=(await client.post('/api/retailer/manufacturing-assets',files={'file':('photo.jpg',photo.getvalue(),'image/jpeg')})).json()['asset_id']
                     payload={'asset_id':asset,'category':'Necklace','min_weight_grams':8,'max_weight_grams':10,'material':'Gold','purity':'22kt','making_budget_mode':'per_gram','making_budget_amount':450,'delivery_needed_date':due,'quotation_window_hours':24}
+                    if unbudgeted:
+                        payload.pop('making_budget_mode'); payload.pop('making_budget_amount')
                     key=key or str(uuid.uuid4());hdr={'Idempotency-Key':key}
                     res=await client.post('/api/retailer/manufacturing-requests',json=payload,headers=hdr)
                     assert res.status_code==200,res.text
@@ -106,6 +108,25 @@ async def run():
                 two=next(o for o in rows if o['wholesaler_id']==w2)
                 assert not rpc(ws2,'manufacturing_quote_submit',quote_params(two['id']))['ok']
                 print('PASS decline independence and cancellation closure')
+                # New simplified form sends no gemstone preference or budget.
+                unbudgeted=await create(unbudgeted=True)
+                record=service.table('manufacturing_requests').select('*').eq('id',unbudgeted).execute().data[0]
+                assert record['making_budget_mode'] is None and record['making_budget_amount'] is None
+                assert record['gemstone_preference']=='unspecified'
+                rows=service.table('manufacturing_offers').select('*').eq('request_id',unbudgeted).execute().data
+                assert len(rows)==2 and all(o['status']=='open' for o in rows)
+                with psycopg.connect(uri) as c:
+                    count=c.execute("SELECT count(DISTINCT recipient_user_id) FROM manufacturing_notification_outbox WHERE kind='NEW_MANUFACTURING_OFFER' AND payload->>'request_id'=%s",(unbudgeted,)).fetchone()[0]
+                assert count==2
+                for index,row in enumerate(rows):
+                    who=ws1 if row['wholesaler_id']==w1 else ws2
+                    params=quote_params(row['id'],900)
+                    params['p_making_charge_mode']='fixed_total' if index else 'per_gram'
+                    assert rpc(who,'manufacturing_quote_submit',params)['ok']
+                as_ret(); assert (await client.get(f'/api/retailer/manufacturing-requests/{unbudgeted}')).status_code==200
+                assert (await client.post(f'/api/retailer/manufacturing-requests/{unbudgeted}/cancel')).status_code==200
+                print('PASS unbudgeted creation, unconstrained quote basis, and outbox notification for every eligible wholesaler')
+
                 # Award versus cancellation: no cancelled request can retain an assignment.
                 race_request=await create()
                 race_offer=service.table('manufacturing_offers').select('*').eq('request_id',race_request).execute().data
