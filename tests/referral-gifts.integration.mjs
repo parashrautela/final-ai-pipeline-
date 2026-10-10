@@ -68,6 +68,7 @@ try {
     'wholesaler ios/supabase/migrations/20260926_01_apple_iap_credits.sql',
     'ai-pipeline/migrations/014_wishlist_sharing.sql', 'ai-pipeline/migrations/016_credit_history_rpc.sql',
     'ai-pipeline/migrations/015_daily_credit_program.sql','ai-pipeline/migrations/012_retailer_referrals.sql','ai-pipeline/migrations/017_invitation_gifts.sql','ai-pipeline/migrations/018_preserve_purchased_credits.sql',
+    ...(process.env.JEWEL_ALLOWANCE_MIGRATION==='1' ? ['ai-pipeline/migrations/023_wholesaler_credit_allowance_policy.sql','ai-pipeline/migrations/024_business_credit_allowances.sql'] : []),
   ];
   for (const file of migrations) {
     const sql = await readFile(path.join(workspace, file), 'utf8');
