@@ -271,7 +271,7 @@ class CreateRequestPayload(BaseModel):
     min_weight_grams: float = Field(..., gt=0, le=5000)
     max_weight_grams: float = Field(..., gt=0, le=5000)
     material: str = Field(..., min_length=2, max_length=50)
-    purity: str = Field(..., min_length=1, max_length=50)
+    purity: Optional[str] = Field(default=None, min_length=1, max_length=50)
     gemstone_preference: Optional[str] = Field(default=None, max_length=100)
     quantity: int = Field(default=1, ge=1, le=1000)
     making_budget_mode: Optional[str] = Field(default=None, pattern="^(per_gram|fixed_total|percentage)$")
@@ -314,7 +314,7 @@ async def create_manufacturing_request(
             "p_min_weight": payload.min_weight_grams,
             "p_max_weight": payload.max_weight_grams,
             "p_material": payload.material.strip(),
-            "p_purity": payload.purity.strip(),
+            "p_purity": payload.purity.strip() if payload.purity else None,
             "p_gemstone_preference": (payload.gemstone_preference or "unspecified").strip() or "unspecified",
             "p_quantity": payload.quantity,
             "p_making_budget_mode": payload.making_budget_mode,
@@ -774,10 +774,26 @@ def _broadcast_result(result):
     raise HTTPException(code, (result or {}).get("message", "Could not complete this action."))
 
 
+class TotalQuotePayload(BaseModel):
+    total_quote_amount: float = Field(..., gt=0, allow_inf_nan=False)
+    proposed_delivery_date: date
+    comments: Optional[str] = Field(default=None, max_length=2000)
+    expected_version: Optional[int] = None
+
+
 @router.post("/wholesaler/manufacturing-offers/{offer_id}/quotes")
-async def submit_manufacturing_quote(offer_id: uuid.UUID, payload: AcceptOfferPayload,
+async def submit_manufacturing_quote(offer_id: uuid.UUID, payload: TotalQuotePayload | AcceptOfferPayload,
                                     wholesaler: dict = Depends(require_verified_wholesaler)):
     """Submit one quote per invitation; never assigns the project. RPC retries are atomic."""
+    if isinstance(payload, TotalQuotePayload):
+        params = {"p_offer_id": str(offer_id), "p_making_charge_mode": "total_quote",
+                  "p_making_charge_amount": payload.total_quote_amount,
+                  "p_metal_estimate_amount": 0, "p_gemstone_estimate_amount": 0,
+                  "p_other_estimate_amount": 0,
+                  "p_proposed_delivery_date": payload.proposed_delivery_date.isoformat(),
+                  "p_comments": payload.comments.strip() if payload.comments else None,
+                  "p_expected_version": payload.expected_version}
+        return await asyncio.to_thread(lambda: _broadcast_result(wholesaler["client"].rpc("manufacturing_quote_submit", params).execute().data))
     params = {"p_offer_id": str(offer_id), "p_making_charge_mode": payload.making_charge_mode,
               "p_making_charge_amount": payload.making_charge_amount,
               "p_metal_estimate_amount": payload.metal_estimate_amount or 0,

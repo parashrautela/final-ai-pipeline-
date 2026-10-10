@@ -21,6 +21,8 @@ async def run():
         with psycopg.connect(uri,autocommit=True) as c:
             c.execute((ROOT/'migrations/021_parallel_manufacturing_quotes.sql').read_text())
             c.execute((ROOT/'migrations/021_parallel_manufacturing_quotes.sql').read_text()) # rerunnable
+            c.execute((ROOT/'migrations/022_simplified_manufacturing_requirements.sql').read_text())
+            c.execute((ROOT/'migrations/022_simplified_manufacturing_requirements.sql').read_text())
             # Model Supabase's existing default authenticated read grants for the RLS test.
             # The feature migration does not introduce any table privileges.
             c.execute('GRANT SELECT ON manufacturing_quotes,manufacturing_offers,manufacturing_requests TO authenticated')
@@ -49,7 +51,7 @@ async def run():
                     asset=(await client.post('/api/retailer/manufacturing-assets',files={'file':('photo.jpg',photo.getvalue(),'image/jpeg')})).json()['asset_id']
                     payload={'asset_id':asset,'category':'Necklace','min_weight_grams':8,'max_weight_grams':10,'material':'Gold','purity':'22kt','making_budget_mode':'per_gram','making_budget_amount':450,'delivery_needed_date':due,'quotation_window_hours':24}
                     if unbudgeted:
-                        payload.pop('making_budget_mode'); payload.pop('making_budget_amount')
+                        payload.pop('making_budget_mode'); payload.pop('making_budget_amount'); payload.pop('purity')
                     key=key or str(uuid.uuid4());hdr={'Idempotency-Key':key}
                     res=await client.post('/api/retailer/manufacturing-requests',json=payload,headers=hdr)
                     assert res.status_code==200,res.text
@@ -113,6 +115,7 @@ async def run():
                 record=service.table('manufacturing_requests').select('*').eq('id',unbudgeted).execute().data[0]
                 assert record['making_budget_mode'] is None and record['making_budget_amount'] is None
                 assert record['gemstone_preference']=='unspecified'
+                assert record['purity'] is None
                 rows=service.table('manufacturing_offers').select('*').eq('request_id',unbudgeted).execute().data
                 assert len(rows)==2 and all(o['status']=='open' for o in rows)
                 with psycopg.connect(uri) as c:
@@ -122,7 +125,20 @@ async def run():
                     who=ws1 if row['wholesaler_id']==w1 else ws2
                     params=quote_params(row['id'],900)
                     params['p_making_charge_mode']='fixed_total' if index else 'per_gram'
-                    assert rpc(who,'manufacturing_quote_submit',params)['ok']
+                    if index:
+                        as_ws(who, row['wholesaler_id'])
+                        total_payload={'total_quote_amount':99000,'proposed_delivery_date':due,'comments':'Entire quantity'}
+                        endpoint=f"/api/wholesaler/manufacturing-offers/{row['id']}/quotes"
+                        bad=await client.post(endpoint,json={**total_payload,'total_quote_amount':0})
+                        assert bad.status_code==422,bad.text
+                        response=await client.post(endpoint,json=total_payload)
+                        assert response.status_code==200,response.text
+                        assert (await client.post(endpoint,json=total_payload)).json()==response.json()
+                        stored=service.table('manufacturing_quotes').select('*').eq('id',response.json()['quote_id']).execute().data[0]
+                        assert stored['making_charge_mode']=='total_quote' and stored['making_charge_amount']==99000
+                        assert stored['metal_estimate_amount']==stored['gemstone_estimate_amount']==stored['other_estimate_amount']==0
+                    else:
+                        assert rpc(who,'manufacturing_quote_submit',params)['ok']
                 as_ret(); assert (await client.get(f'/api/retailer/manufacturing-requests/{unbudgeted}')).status_code==200
                 assert (await client.post(f'/api/retailer/manufacturing-requests/{unbudgeted}/cancel')).status_code==200
                 print('PASS unbudgeted creation, unconstrained quote basis, and outbox notification for every eligible wholesaler')
