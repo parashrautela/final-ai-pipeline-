@@ -92,6 +92,10 @@ try {
   assert.equal(businesses,await readFile(path.join(workspace,'wholesaler ios/supabase/migrations/20261010_02_business_credit_allowances.sql'),'utf8'));
   await admin.query(businesses.replaceAll('clock_timestamp()','jewel_test.clock()'));
   await admin.query(businesses.replaceAll('clock_timestamp()','jewel_test.clock()'));
+  const immediate=await readFile(path.join(workspace,'ai-pipeline/migrations/026_admin_credit_grants.sql'),'utf8');
+  assert.equal(immediate,await readFile(path.join(workspace,'wholesaler ios/supabase/migrations/20261010_03_admin_credit_grants.sql'),'utf8'));
+  await admin.query(immediate.replaceAll('clock_timestamp()','jewel_test.clock()'));
+  await admin.query(immediate.replaceAll('clock_timestamp()','jewel_test.clock()'));
   const service=await connect('service_role'),anon=await connect('anon'),client=await connect('authenticated');
   const time=async value=>q(admin,'UPDATE jewel_test.time SET value=$1',[value]);
   const make=async(name,status='verified')=>{
@@ -218,5 +222,37 @@ try {
   check('a spend waiting across expiry charges the new 24-hour cycle',()=>{});
   await q(admin,"UPDATE wholesalers SET verification_status='banned' WHERE id=$1",[old.id]);assert.equal((await wallet(old)).error,'NOT_VERIFIED');
   check('suspended businesses cannot access recurring grants',()=>{});
+  const recipient=await make('Immediate recipient'), sendKey=randomUUID();
+  const give=(target,units=700,key=randomUUID(),reason='Immediate support')=>rpc(service,'admin_grant_business_credits',['wholesaler',target.id,units,reason,key]);
+  const delivered=await give(recipient,700,sendKey); assert.equal(delivered.granted,700);assert.equal(delivered.available,700);
+  assert.equal((await q(admin,'SELECT count(*)::int n FROM credit_allowance_cycles WHERE account_id=$1',[recipient.user])).rows[0].n,0);
+  const ownerWallet=await wallet(recipient),anchor=ownerWallet.resets_at;assert.equal(ownerWallet.available,2700);assert.equal(ownerWallet.bonus_available,700);assert.equal(ownerWallet.admin_available,700);
+  assert.equal((await give(recipient,700,sendKey)).replayed,true);
+  assert.equal((await give(recipient,701,sendKey)).error,'IDEMPOTENCY_CONFLICT');
+  assert.equal((await give(recipient,700,sendKey,'Different reason')).error,'IDEMPOTENCY_CONFLICT');
+  assert.equal((await wallet(recipient)).resets_at,anchor);
+  check('immediate bonus is usable now without issuing/resetting a daily cycle and exact retries cannot double-send',()=>{});
+  const concurrentKey=randomUUID();
+  const peers=await Promise.all(Array.from({length:5},()=>connect('service_role')));
+  const outcomes=await Promise.all(peers.map(c=>rpc(c,'admin_grant_business_credits',['wholesaler',recipient.id,100,'Concurrent send',concurrentKey])));
+  assert.equal(outcomes.filter(x=>!x.replayed).length,1);
+  assert.equal((await wallet(recipient)).admin_available,800);
+  check('concurrent retries create exactly one admin lot and audit entry',()=>{});
+  await set(recipient,0,0);await time(anchor);
+  const pausedBonus=await wallet(recipient);assert.equal(pausedBonus.daily_available,0);assert.equal(pausedBonus.admin_available,800);assert.equal(pausedBonus.available,800);
+  const spendBonus=await rpc(service,'spend_credits',[recipient.user,'chamak.generate','bonus-spend','test','bonus-job',{}]);assert.equal(spendBonus.balance,600);
+  const refundBonus=await rpc(service,'refund_debit',[spendBonus.ledger_id,'Failed job']);assert.equal(refundBonus.refunded,200);assert.equal((await wallet(recipient)).admin_available,800);
+  const bonusReport=await list(recipient);assert.equal(bonusReport.items[0].admin_available,800);assert.equal(bonusReport.items[0].daily_allowance,0);
+  check('admin bonuses survive refill/pause, appear in reporting, and spend/refund restores the original bonus lot',()=>{});
+  const storeGrant=await rpc(service,'admin_grant_business_credits',['retailer',store,300,'Store support',randomUUID()]);assert.equal(storeGrant.granted,300);
+  assert.equal((await wallet({user:staff})).admin_available,300);
+  await assert.rejects(()=>rpc(anon,'admin_grant_business_credits',['retailer',store,300,'Unauthorized',randomUUID()]),e=>e.code==='42501');
+  await assert.rejects(()=>rpc(client,'admin_grant_business_credits',['retailer',store,300,'Unauthorized',randomUUID()]),e=>e.code==='42501');
+  await assert.rejects(()=>q(client,'SELECT * FROM credit_admin_grants'),e=>e.code==='42501');
+  assert.equal((await rpc(service,'admin_grant_business_credits',['employee',store,300,'Invalid role',randomUUID()])).error,'INVALID_ARGUMENTS');
+  assert.equal((await give(recipient,0)).error,'INVALID_ARGUMENTS');assert.equal((await give(recipient,100001)).error,'INVALID_ARGUMENTS');
+  assert.equal((await give(recipient,100,randomUUID(),' ')).error,'INVALID_ARGUMENTS');
+  const banned=await make('Banned recipient','banned');assert.equal((await give(banned)).error,'NOT_VERIFIED');
+  check('retailer staff receive the shared bonus while invalid, banned and direct-client grants are rejected',()=>{});
   console.log(`${checks} allowance integration scenarios passed using real PostgreSQL.`);
 } finally {await Promise.allSettled(connections.map(c=>c.end()));await database.stop().catch(()=>{});await rm(testDir,{recursive:true,force:true});}
