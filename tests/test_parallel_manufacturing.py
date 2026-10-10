@@ -23,6 +23,9 @@ async def run():
             c.execute((ROOT/'migrations/021_parallel_manufacturing_quotes.sql').read_text()) # rerunnable
             c.execute((ROOT/'migrations/022_simplified_manufacturing_requirements.sql').read_text())
             c.execute((ROOT/'migrations/022_simplified_manufacturing_requirements.sql').read_text())
+            c.execute((ROOT/'tests/fixtures/order_workflow.sql').read_text())
+            c.execute((ROOT/'migrations/023_awarded_manufacturing_orders.sql').read_text())
+            c.execute((ROOT/'migrations/023_awarded_manufacturing_orders.sql').read_text())
             # Model Supabase's existing default authenticated read grants for the RLS test.
             # The feature migration does not introduce any table privileges.
             c.execute('GRANT SELECT ON manufacturing_quotes,manufacturing_offers,manufacturing_requests TO authenticated')
@@ -82,6 +85,7 @@ async def run():
                 as_ret()
                 detail=(await client.get(f'/api/retailer/manufacturing-requests/{rid}')).json()['request']
                 assert detail['state']=='collecting' and len(detail['quotes'])==2 and all(q['wholesaler'] for q in detail['quotes'])
+                assert service.table('orders').select('*').eq('manufacturing_request_id',rid).execute().data==[]
                 print('PASS multiple quotes, no supplier assignment, duplicate/conflicting retries and owned API access')
                 # Enforce the actual authenticated SQL role, not just adapter identity.
                 with psycopg.connect(uri,autocommit=True) as c:
@@ -99,6 +103,26 @@ async def run():
                 winner=next(r['quote_id'] for r in results if r['ok'])
                 assert (await client.post(f'/api/retailer/manufacturing-requests/{rid}/award',json={'quote_id':winner})).status_code==200
                 assert (await client.post(f'/api/retailer/manufacturing-requests/{rid}/cancel')).status_code==409
+                assigned=service.table('orders').select('*').eq('manufacturing_request_id',rid).execute().data
+                assert len(assigned)==1 and assigned[0]['status']=='accepted' and assigned[0]['product_id'] is None
+                winner_user=ws1 if winner==q1 else ws2
+                loser_user=ws2 if winner==q1 else ws1
+                order_id=assigned[0]['id']
+                visible=rpc(winner_user,'wholesaler_orders',{})
+                assert len(visible)==1 and visible[0]['id']==order_id
+                assert visible[0]['manufacturing_offer_id']==(o1 if winner==q1 else o2)
+                assert visible[0]['product_title']=='Custom Necklace order'
+                assert rpc(loser_user,'wholesaler_orders',{})==[]
+                assert not rpc(loser_user,'order_set_status',{'p_order':order_id,'p_status':'packed','p_reason':None})['ok']
+                assert rpc(winner_user,'order_set_status',{'p_order':order_id,'p_status':'packed','p_reason':None})['ok']
+                assert rpc(winner_user,'order_set_status',{'p_order':order_id,'p_status':'dispatched','p_reason':None})['ok']
+                assert rpc(ret,'order_set_status',{'p_order':order_id,'p_status':'received','p_reason':None})['ok']
+                assert rpc(ret,'order_set_status',{'p_order':order_id,'p_status':'completed','p_reason':None})['ok']
+                with psycopg.connect(uri,autocommit=True) as c:
+                    c.execute((ROOT/'migrations/023_awarded_manufacturing_orders.sql').read_text())
+                preserved=service.table('orders').select('*').eq('manufacturing_request_id',rid).execute().data
+                assert len(preserved)==1 and preserved[0]['status']=='completed'
+                print('PASS assigned order visibility, unique award/retry, supplier ownership, full order lifecycle and rerunnable backfill')
                 print('PASS retailer-only award, quote privacy, worker permissions and exactly one concurrent winner')
                 # Decline leaves all other suppliers open; cancellation invalidates quotes.
                 rid2=await create()
