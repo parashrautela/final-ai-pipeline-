@@ -1,0 +1,288 @@
+BANGLes
+
+Apply these rules specifically to BANGLES while preserving all universal base-prompt rules. The source bangle is the exact approved product.
+
+The bangle is a rigid jewellery object presented resting naturally on premium soft, textured velvet or suede-like textile. Do not redesign, reinterpret, simplify, or materially alter the original product.
+
+1. COMMERCIAL MARKING REMOVAL — ABSOLUTE
+
+Remove ALL non-jewellery commercial material:
+- Price tags/stickers/labels
+- Pricing/numbers/codes
+- Barcodes
+- SKU/inventory/category labels
+- Product cards/paper tags
+- Seller/store markings
+- Promotional text
+- Watermarks
+- Websites/social handles
+- Non-product commercial logos
+- Strings, threads, clips and holders used for identification
+
+PRICE TAG REMOVAL IS ABSOLUTE.
+
+No price, barcode, SKU, category marking, seller marking, watermark, promotional text or commercial attachment may remain.
+
+Never preserve, blur, hide, crop, relocate, recreate, replace or reinterpret commercial markings. Remove the complete tag and attachments. If removal exposes background/fabric, reconstruct only the minimum surrounding area. Never invent jewellery hidden by a removed commercial object.
+
+2. BANGLE FIDELITY — ABSOLUTE
+
+Preserve the exact source bangle:
+- Overall silhouette
+- Outer/inner circumference
+- Diameter
+- Band thickness and width
+- Cross-sectional profile
+- Decorative patterns and repeated elements
+- Gemstones and placement
+- Motifs and borders
+- Engravings, grooves, ridges and filigree
+- Relief, openings and closures
+- Surface texture
+- Structural joints
+- Handcrafted irregularities
+
+Do not redesign, simplify, beautify, make more ornate or more symmetrical, add/remove stones, change gemstone size/color/placement, or replace the source with a generic luxury bangle.
+
+The source is the product, not inspiration.
+
+3. RIGID CIRCULAR GEOMETRY — ABSOLUTE
+
+The bangle is rigid.
+
+Preserve its exact circular, oval or intentionally shaped geometry.
+
+Do not:
+- Bend
+- Flatten
+- Stretch
+- Compress
+- Warp
+- Distort the inner opening
+- Change circumference
+- Change band thickness
+- Turn circular geometry into oval
+- Make a rigid bangle behave like a flexible bracelet
+
+The bangle remains rigid; the textile conforms subtly to it.
+
+If the source has an intentional non-circular shape, preserve that exact shape.
+
+4. VELVET / SUEDE PRESENTATION
+
+Present the bangle on premium soft textile such as:
+- Velvet
+- Suede-like fabric
+- Soft brushed textile
+- Fine tactile cloth
+
+The universal base controls the fabric color.
+
+Use natural wrinkles, folds, soft ridges, gentle depressions and subtle surface texture. The fabric must look soft and compressible, not plastic or perfectly synthetic.
+
+The textile remains secondary; the bangle is the dominant product.
+
+5. BANGLE-TO-FABRIC PHYSICS
+
+The bangle must behave like a rigid physical object naturally resting on soft fabric.
+
+It must obey gravity and settle into a stable position.
+
+Do not allow the bangle to:
+- Float
+- Hover
+- Sink deeply
+- Pass through fabric
+- Appear magnetically suspended
+- Appear glued down
+- Bend around fabric
+- Deform because of folds
+
+At contact points, the fabric may compress subtly beneath the bangle. The bangle itself must remain rigid.
+
+6. NATURAL RESTING ORIENTATION
+
+Allow the bangle to settle according to its geometry and center of mass.
+
+It may:
+- Lie partly on its side
+- Rest at a slight angle
+- Lean naturally against a fold
+- Settle into a shallow depression
+- Overlap another bangle when multiple pieces are present
+
+Do not force a perfectly frontal orientation.
+
+Do not make it stand vertically without support, balance impossibly on an edge, or appear ready to fall.
+
+It should look as though the bangle was gently placed on the textile and naturally came to rest.
+
+7. INNER OPENING & NEGATIVE SPACE
+
+Preserve the exact inner diameter, shape and three-dimensional depth.
+
+The opening must remain:
+- Open
+- Undistorted
+- Free of invented jewellery
+- Free of unnatural fabric intrusion
+
+Fabric may be visible through the opening where physically appropriate, but must never pass through the solid metal.
+
+Do not fill, close, flatten or redesign the opening.
+
+8. FABRIC CONTACT & COMPRESSION
+
+At real contact points:
+- Fine wrinkles may flatten slightly.
+- Fabric may compress beneath heavier areas.
+- Small folds may rise around the outer edge.
+- The textile may communicate the bangle's weight.
+- Subtle contact shadows may appear.
+
+Do not create exaggerated dents, bury the bangle, wrap fabric around its circumference, or make fabric appear attached to the jewellery.
+
+The interaction must remain subtle and physically believable.
+
+9. MULTIPLE BANGLES / STACKING
+
+If multiple bangles are present, preserve the exact number, order, relative size, construction and arrangement.
+
+Treat each bangle as an independent rigid object.
+
+Each retains its own:
+- Circular/intentional geometry
+- Thickness
+- Decorative structure
+- Surface details
+- Physical position
+
+Adjacent bangles may touch or overlap naturally, but must not:
+- Fuse
+- Merge into one object
+- Pass through one another
+- Lose their individual openings
+- Become visually indistinguishable
+
+Stacked bangles should feel physically assembled, not digitally layered.
+
+10. STACKING & WEIGHT
+
+Respect natural weight distribution.
+
+Heavier bangles may sit more firmly against the textile or adjacent bangles. Do not make every bangle float at identical elevation.
+
+Allow small positional variation caused by gravity and contact while preserving the original stacking relationship.
+
+Do not rearrange the source stack, add bangles to fill space, or remove pieces for cleanliness.
+
+11. DECORATIVE & GEMSTONE FIDELITY
+
+Preserve every source-supported:
+- Stone and setting
+- Prong/bezel structure
+- Engraving
+- Carving
+- Groove/ridge
+- Filigree
+- Floral/temple motifs
+- Repeated patterns
+- Borders
+- Relief
+- Cut-outs
+- Fine surface detail
+
+Gemstones remain in their original settings.
+
+Do not add/remove/change stone size, shape, color, placement or setting structure.
+
+Raised elements remain raised; recessed elements remain recessed.
+
+12. BAND SURFACE & CRAFTSMANSHIP
+
+Preserve the original surface character, including ribbing, grooves, twisted metal, hammered texture, engraving, repeated ridges, carving, polished/matte sections, textured gold and handcrafted irregularity.
+
+Do not smooth textured metal into generic polished metal, merge fine grooves, erase craftsmanship, or replace the source surface with uniform CGI geometry.
+
+13. METAL REFLECTION & CONTACT SHADOW
+
+Metal reflections must follow the actual 3D geometry of curved surfaces, ridges, edges, engravings, settings and relief.
+
+Do not create flat uniform reflections or make metal appear liquid, plastic or artificial.
+
+The bangle must create a subtle contact shadow where it touches fabric. Shadow direction must follow the universal base lighting.
+
+No detached shadows, black outlines, halos, excessive darkness or contradictory shadows.
+
+14. SCALE & COMPOSITION
+
+The bangle remains the dominant visual subject.
+
+Provide enough surrounding textile to establish physical context without making the bangle insignificant.
+
+Do not enlarge beyond believable scale.
+
+Do not crop through the main circular structure.
+
+Keep the complete outer circumference and enough of the inner opening visible to communicate the product's three-dimensional form.
+
+For multiple bangles, keep the complete group visible without cutting through important structures.
+
+15. SOURCE PROXIMITY — ABSOLUTE
+
+The wholesaler's input determines:
+- Design
+- Shape
+- Size
+- Proportion
+- Quantity
+- Decorative elements
+- Gemstones
+- Band structure
+- Surface details
+- Construction
+- Arrangement
+
+Do not use the source as loose inspiration.
+
+Do not add luxury details, simplify difficult areas, or "complete" unclear jewellery.
+
+When source information is unclear, preserve only the visible/source-supported structure.
+
+NEVER INVENT JEWELLERY.
+
+16. FINAL VALIDATION
+
+Verify:
+- Bangle rests naturally on soft velvet/suede.
+- Bangle remains rigid.
+- Gravity and center of mass are believable.
+- Fabric responds subtly to weight.
+- No floating, hovering, deep sinking or penetration.
+- Original circular/intentional geometry is preserved.
+- Inner opening remains open and accurate.
+- Complete bangle/group remains visible.
+- Band thickness, circumference and proportions remain unchanged.
+- Decorative details and gemstones remain intact.
+- Multiple bangles remain separate and physically believable.
+- Original quantity and arrangement are preserved.
+- No component is invented, duplicated, removed or redesigned.
+- No price, pricing, barcode, SKU, label, watermark, seller marking, promotional text or commercial attachment remains.
+- Final image remains extremely close to the wholesaler's original product.
+
+FINAL RULE:
+
+THE BANGLE IS THE PRODUCT.
+THE TEXTILE IS ONLY THE PRESENTATION SURFACE.
+THE BANGLE REMAINS RIGID.
+THE FABRIC RESPONDS TO THE BANGLE.
+THE WHOLESALER'S ORIGINAL JEWELLERY IS THE AUTHORITY.
+
+PRICE TAG REMOVAL IS NON-NEGOTIABLE.
+COMMERCIAL MARKING REMOVAL IS NON-NEGOTIABLE.
+ORIGINAL PRODUCT FIDELITY IS NON-NEGOTIABLE.
+SOURCE DESIGN MUST NOT BE REINTERPRETED.
+
+WHEN UNCERTAIN:
+PRESERVE THE SOURCE.
+DO NOT INVENT.

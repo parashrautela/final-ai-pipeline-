@@ -1,0 +1,128 @@
+OTHER / UNCATEGORIZED JEWELLERY
+
+Use when the product does not clearly fit Necklace, Earrings, Haram, Pendant, Rings, Bangles, Nosepins, or Mangalsutra. The universal base prompt remains active and has priority. Determine physical behavior from the source without forcing it into a known category.
+
+1. PRODUCT IDENTIFICATION
+
+Treat the source as the authority. Identify rigid/flexible/hanging/surface-resting/wearable construction; geometry; chains, links, beads, stones, pendants, drops, connectors and attachment points; exact quantity and component relationships; orientation; and whether a surface, support or body context is genuinely required.
+
+Do not use generic category conventions when the source shows otherwise.
+
+2. COMMERCIAL MARKING REMOVAL — ABSOLUTE
+
+Remove ALL non-jewellery commercial material: price tags/stickers/labels/numbers, barcodes, SKU/inventory/category labels, product cards/paper tags, seller markings, promotional text, watermarks, websites/social handles, non-product commercial logos, strings, clips, holders and identification attachments.
+
+PRICE TAG REMOVAL IS ABSOLUTE. No price, barcode, SKU, commercial text, label, watermark, seller marking or tag attachment may remain.
+
+Never preserve, blur, hide, crop, relocate, recreate, replace or reinterpret commercial material. Remove it completely. Reconstruct only the minimum exposed background. Never invent jewellery hidden by a removed tag.
+
+3. PRODUCT FIDELITY — ABSOLUTE
+
+Preserve the exact source product: silhouette, geometry, proportions, quantity, component count/order, metal structure, gemstones/settings, beads/pearls, chains/links, connectors, clasps/hooks, pendants/drops, engravings, filigree, carving, relief, borders, openings/cavities, texture, handcrafted irregularities and intentional asymmetry.
+
+Do not redesign, reinterpret, simplify, modernize, add, remove, duplicate, rearrange or make it more symmetrical. The source is the product, not inspiration.
+
+4. NO INVENTION
+
+Preserve only reliably visible/source-supported details. Never use generic jewellery knowledge to complete unclear areas or invent gemstones, beads, chains, links, engravings, filigree, motifs, hidden craftsmanship, connectors or attachment points.
+
+If blurry, compressed, poorly lit or obstructed, preserve what is reliably visible and leave uncertainty unchanged.
+
+WHEN UNCERTAIN: PRESERVE THE SOURCE. DO NOT INVENT.
+
+5. PHYSICAL BEHAVIOR
+
+RIGID: preserve geometry; never bend, stretch, compress or deform it.
+
+FLEXIBLE: chains, strings, threads and linked structures follow gravity, maintain believable tension and continuous connections; no impossible bends or floating.
+
+HANGING: suspend from the actual attachment point; gravity determines orientation and weight distribution.
+
+SURFACE-RESTING: use the premium surface defined by the base; allow natural settling and contact.
+
+CIRCULAR/OVAL: preserve circumference, opening and curvature; never flatten or deform.
+
+MULTI-COMPONENT: preserve order, relationships and connections; prevent merging and impossible intersections.
+
+6. GRAVITY & STRUCTURE
+
+Heavy elements carry believable weight; lighter elements follow their supports. Preserve plausible tension, suspension, contact and balance.
+
+No floating/weightless components, unsupported heavy sections, impossible balancing, or flexible parts behaving rigidly without reason.
+
+Every component must remain connected as supported by the source. Preserve links, loops, clasps, hooks, chains, posts, bails, connectors, settings and joints.
+
+No detached/broken parts, missing links, invented attachment points, duplicated connectors, impossible intersections, chains passing through ornaments, or merged components. Keep adjacent elements individually readable.
+
+7. PRESENTATION & SURFACE CONTACT
+
+When human presentation is unnecessary, use the premium environment defined by the base prompt. Where appropriate, use velvet, suede, soft fabric, fine textile or naturally folded material.
+
+Do not add unrelated props or hard display objects unless physically required.
+
+At real contact points, allow subtle settling, fabric compression, fold response and contact shadows. No deep sinking, floating, penetration, artificial attachment, excessive wrapping or impossible shadows.
+
+Jewellery remains dominant.
+
+8. WEARABLE PRESENTATION
+
+If the source clearly indicates body-worn use, show the correct body location only when needed. The body must be anatomically plausible and jewellery must contact the correct surface.
+
+Do not attach incorrectly, distort jewellery to fit, use a human as decoration, or let the body dominate. If unnecessary, do not introduce a human.
+
+9. MATERIAL & DETAIL FIDELITY
+
+Preserve source-supported stone size, shape, color, placement, prongs, bezels, settings, metal thickness, finish, relief and texture.
+
+Gemstones remain in their original settings. Never create, replace, enlarge, recolor or reposition them.
+
+Metal reflections follow actual 3D geometry. Do not make jewellery plastic, liquid, synthetic or CGI-like.
+
+Preserve visible engravings, filigree, tiny beads, small stones, fine chains, prongs, grooves, relief, cavities, borders, texture and connectors. Improve readability without changing construction. Never smooth, merge or remove fine detail.
+
+10. SILHOUETTE & COMPOSITION
+
+Preserve the exact silhouette through staging and enhancement. Do not erode, expand, warp or smooth structural edges, alter openings, or change component relationships. Commercial removal must never alter the jewellery silhouette.
+
+Adapt composition to the actual form:
+- Long → retain vertical character
+- Wide → retain horizontal character
+- Circular → retain complete circular structure
+- Compact → provide breathing room
+- Layered → preserve hierarchy
+- Hanging → provide vertical space
+- Surface-resting → show enough surface for contact
+
+Do not force the product into a predefined jewellery composition or redesign it to fit the frame. Preserve completeness unless explicitly permitted.
+
+11. FINAL VALIDATION
+
+Verify:
+- Exact product, quantity, silhouette, proportions, components, gemstones and craftsmanship preserved
+- Correct rigid/flexible/hanging/resting physics
+- All connections intact
+- No floating, clipping, penetration, impossible intersections, duplication, omission or invention
+- No price/pricing information, barcode, SKU, label, watermark, seller marking, commercial text or attachment
+- No unclear detail invented
+- No generic jewellery design substituted
+- Product remains dominant and physically believable
+
+FINAL RULE:
+
+THE SOURCE PRODUCT IS THE AUTHORITY.
+
+PHYSICAL REALISM MUST SERVE THE SOURCE.
+
+PHOTOGRAPHY MUST SERVE THE JEWELLERY.
+
+PRICE TAG REMOVAL IS NON-NEGOTIABLE.
+
+COMMERCIAL MARKING REMOVAL IS NON-NEGOTIABLE.
+
+ORIGINAL PRODUCT FIDELITY IS NON-NEGOTIABLE.
+
+SOURCE DESIGN MUST NOT BE REINTERPRETED.
+
+WHEN UNCERTAIN:
+PRESERVE THE SOURCE.
+DO NOT INVENT.

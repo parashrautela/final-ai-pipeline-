@@ -21,6 +21,11 @@ async def run():
         with psycopg.connect(uri,autocommit=True) as c:
             c.execute((ROOT/'migrations/021_parallel_manufacturing_quotes.sql').read_text())
             c.execute((ROOT/'migrations/021_parallel_manufacturing_quotes.sql').read_text()) # rerunnable
+            c.execute((ROOT/'migrations/022_simplified_manufacturing_requirements.sql').read_text())
+            c.execute((ROOT/'migrations/022_simplified_manufacturing_requirements.sql').read_text())
+            c.execute((ROOT/'tests/fixtures/order_workflow.sql').read_text())
+            c.execute((ROOT/'migrations/023_awarded_manufacturing_orders.sql').read_text())
+            c.execute((ROOT/'migrations/023_awarded_manufacturing_orders.sql').read_text())
             # Model Supabase's existing default authenticated read grants for the RLS test.
             # The feature migration does not introduce any table privileges.
             c.execute('GRANT SELECT ON manufacturing_quotes,manufacturing_offers,manufacturing_requests TO authenticated')
@@ -44,10 +49,12 @@ async def run():
                 assert (await client.post('/api/retailer/manufacturing-requests/'+str(uuid.uuid4())+'/award',json={'quote_id':str(uuid.uuid4())})).status_code==401
                 assert (await client.post('/api/wholesaler/manufacturing-offers/'+str(uuid.uuid4())+'/quotes',json=quote)).status_code==401
                 as_ret()
-                async def create(key=None):
+                async def create(key=None, unbudgeted=False):
                     photo=io.BytesIO();Image.new('RGB',(32,32),'gold').save(photo,'JPEG')
                     asset=(await client.post('/api/retailer/manufacturing-assets',files={'file':('photo.jpg',photo.getvalue(),'image/jpeg')})).json()['asset_id']
                     payload={'asset_id':asset,'category':'Necklace','min_weight_grams':8,'max_weight_grams':10,'material':'Gold','purity':'22kt','making_budget_mode':'per_gram','making_budget_amount':450,'delivery_needed_date':due,'quotation_window_hours':24}
+                    if unbudgeted:
+                        payload.pop('making_budget_mode'); payload.pop('making_budget_amount'); payload.pop('purity')
                     key=key or str(uuid.uuid4());hdr={'Idempotency-Key':key}
                     res=await client.post('/api/retailer/manufacturing-requests',json=payload,headers=hdr)
                     assert res.status_code==200,res.text
@@ -78,6 +85,7 @@ async def run():
                 as_ret()
                 detail=(await client.get(f'/api/retailer/manufacturing-requests/{rid}')).json()['request']
                 assert detail['state']=='collecting' and len(detail['quotes'])==2 and all(q['wholesaler'] for q in detail['quotes'])
+                assert service.table('orders').select('*').eq('manufacturing_request_id',rid).execute().data==[]
                 print('PASS multiple quotes, no supplier assignment, duplicate/conflicting retries and owned API access')
                 # Enforce the actual authenticated SQL role, not just adapter identity.
                 with psycopg.connect(uri,autocommit=True) as c:
@@ -95,6 +103,26 @@ async def run():
                 winner=next(r['quote_id'] for r in results if r['ok'])
                 assert (await client.post(f'/api/retailer/manufacturing-requests/{rid}/award',json={'quote_id':winner})).status_code==200
                 assert (await client.post(f'/api/retailer/manufacturing-requests/{rid}/cancel')).status_code==409
+                assigned=service.table('orders').select('*').eq('manufacturing_request_id',rid).execute().data
+                assert len(assigned)==1 and assigned[0]['status']=='accepted' and assigned[0]['product_id'] is None
+                winner_user=ws1 if winner==q1 else ws2
+                loser_user=ws2 if winner==q1 else ws1
+                order_id=assigned[0]['id']
+                visible=rpc(winner_user,'wholesaler_orders',{})
+                assert len(visible)==1 and visible[0]['id']==order_id
+                assert visible[0]['manufacturing_offer_id']==(o1 if winner==q1 else o2)
+                assert visible[0]['product_title']=='Custom Necklace order'
+                assert rpc(loser_user,'wholesaler_orders',{})==[]
+                assert not rpc(loser_user,'order_set_status',{'p_order':order_id,'p_status':'packed','p_reason':None})['ok']
+                assert rpc(winner_user,'order_set_status',{'p_order':order_id,'p_status':'packed','p_reason':None})['ok']
+                assert rpc(winner_user,'order_set_status',{'p_order':order_id,'p_status':'dispatched','p_reason':None})['ok']
+                assert rpc(ret,'order_set_status',{'p_order':order_id,'p_status':'received','p_reason':None})['ok']
+                assert rpc(ret,'order_set_status',{'p_order':order_id,'p_status':'completed','p_reason':None})['ok']
+                with psycopg.connect(uri,autocommit=True) as c:
+                    c.execute((ROOT/'migrations/023_awarded_manufacturing_orders.sql').read_text())
+                preserved=service.table('orders').select('*').eq('manufacturing_request_id',rid).execute().data
+                assert len(preserved)==1 and preserved[0]['status']=='completed'
+                print('PASS assigned order visibility, unique award/retry, supplier ownership, full order lifecycle and rerunnable backfill')
                 print('PASS retailer-only award, quote privacy, worker permissions and exactly one concurrent winner')
                 # Decline leaves all other suppliers open; cancellation invalidates quotes.
                 rid2=await create()
@@ -106,6 +134,39 @@ async def run():
                 two=next(o for o in rows if o['wholesaler_id']==w2)
                 assert not rpc(ws2,'manufacturing_quote_submit',quote_params(two['id']))['ok']
                 print('PASS decline independence and cancellation closure')
+                # New simplified form sends no gemstone preference or budget.
+                unbudgeted=await create(unbudgeted=True)
+                record=service.table('manufacturing_requests').select('*').eq('id',unbudgeted).execute().data[0]
+                assert record['making_budget_mode'] is None and record['making_budget_amount'] is None
+                assert record['gemstone_preference']=='unspecified'
+                assert record['purity'] is None
+                rows=service.table('manufacturing_offers').select('*').eq('request_id',unbudgeted).execute().data
+                assert len(rows)==2 and all(o['status']=='open' for o in rows)
+                with psycopg.connect(uri) as c:
+                    count=c.execute("SELECT count(DISTINCT recipient_user_id) FROM manufacturing_notification_outbox WHERE kind='NEW_MANUFACTURING_OFFER' AND payload->>'request_id'=%s",(unbudgeted,)).fetchone()[0]
+                assert count==2
+                for index,row in enumerate(rows):
+                    who=ws1 if row['wholesaler_id']==w1 else ws2
+                    params=quote_params(row['id'],900)
+                    params['p_making_charge_mode']='fixed_total' if index else 'per_gram'
+                    if index:
+                        as_ws(who, row['wholesaler_id'])
+                        total_payload={'total_quote_amount':99000,'proposed_delivery_date':due,'comments':'Entire quantity'}
+                        endpoint=f"/api/wholesaler/manufacturing-offers/{row['id']}/quotes"
+                        bad=await client.post(endpoint,json={**total_payload,'total_quote_amount':0})
+                        assert bad.status_code==422,bad.text
+                        response=await client.post(endpoint,json=total_payload)
+                        assert response.status_code==200,response.text
+                        assert (await client.post(endpoint,json=total_payload)).json()==response.json()
+                        stored=service.table('manufacturing_quotes').select('*').eq('id',response.json()['quote_id']).execute().data[0]
+                        assert stored['making_charge_mode']=='total_quote' and stored['making_charge_amount']==99000
+                        assert stored['metal_estimate_amount']==stored['gemstone_estimate_amount']==stored['other_estimate_amount']==0
+                    else:
+                        assert rpc(who,'manufacturing_quote_submit',params)['ok']
+                as_ret(); assert (await client.get(f'/api/retailer/manufacturing-requests/{unbudgeted}')).status_code==200
+                assert (await client.post(f'/api/retailer/manufacturing-requests/{unbudgeted}/cancel')).status_code==200
+                print('PASS unbudgeted creation, unconstrained quote basis, and outbox notification for every eligible wholesaler')
+
                 # Award versus cancellation: no cancelled request can retain an assignment.
                 race_request=await create()
                 race_offer=service.table('manufacturing_offers').select('*').eq('request_id',race_request).execute().data

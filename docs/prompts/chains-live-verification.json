@@ -1,0 +1,21 @@
+{
+  "module": {
+    "id": "3c6c201b-501e-43c7-9306-520cfaba1047",
+    "jewellery_type": "chain",
+    "version": 2,
+    "is_active": true
+  },
+  "health": {
+    "status": "ok",
+    "environment": "production",
+    "capabilities": {
+      "category_variant_scenes": true
+    }
+  },
+  "validation_status": 415,
+  "validation_response": {
+    "detail": "Unsupported file type 'text/plain'"
+  },
+  "deployment_commit": "03364b1",
+  "paid_generation_started": false
+}

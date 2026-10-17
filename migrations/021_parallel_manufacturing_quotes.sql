@@ -1,5 +1,11 @@
 -- Parallel quotations: new requests only; legacy queues remain intact.
 BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+ALTER TABLE public.manufacturing_requests ALTER COLUMN making_budget_mode DROP NOT NULL;
+ALTER TABLE public.manufacturing_requests ALTER COLUMN making_budget_amount DROP NOT NULL;
+ALTER TABLE public.manufacturing_requests DROP CONSTRAINT IF EXISTS manufacturing_requests_budget_pair_check;
+ALTER TABLE public.manufacturing_requests ADD CONSTRAINT manufacturing_requests_budget_pair_check CHECK ((making_budget_mode IS NULL AND making_budget_amount IS NULL) OR (making_budget_mode IS NOT NULL AND making_budget_amount IS NOT NULL));
 ALTER TABLE public.manufacturing_requests ADD COLUMN IF NOT EXISTS broadcast_mode text NOT NULL DEFAULT 'sequential' CHECK (broadcast_mode IN ('sequential','parallel'));
 ALTER TABLE public.manufacturing_requests ADD COLUMN IF NOT EXISTS quotation_deadline timestamptz;
 ALTER TABLE public.manufacturing_requests DROP CONSTRAINT IF EXISTS manufacturing_requests_state_check;
@@ -87,10 +93,10 @@ BEGIN
     IF p_quantity IS NULL OR p_quantity <= 0 OR p_quantity > 1000 THEN
         RETURN jsonb_build_object('ok', false, 'error', 'INVALID_QUANTITY', 'message', 'Quantity must be between 1 and 1000.');
     END IF;
-    IF p_making_budget_mode NOT IN ('per_gram', 'fixed_total', 'percentage') THEN
+    IF (p_making_budget_mode IS NULL) != (p_making_budget_amount IS NULL) OR (p_making_budget_mode IS NOT NULL AND p_making_budget_mode NOT IN ('per_gram', 'fixed_total', 'percentage')) THEN
         RETURN jsonb_build_object('ok', false, 'error', 'INVALID_BUDGET_MODE', 'message', 'Budget mode must be per_gram, fixed_total, or percentage.');
     END IF;
-    IF p_making_budget_amount IS NULL OR p_making_budget_amount <= 0 THEN
+    IF p_making_budget_amount IS NOT NULL AND p_making_budget_amount <= 0 THEN
         RETURN jsonb_build_object('ok', false, 'error', 'INVALID_BUDGET_AMOUNT', 'message', 'Budget amount must be positive.');
     END IF;
     IF p_delivery_needed_date IS NULL OR p_delivery_needed_date <= CURRENT_DATE THEN
@@ -195,7 +201,7 @@ BEGIN
  END IF;
  IF r.state!='collecting' OR o.status!='open' OR clock_timestamp()>=r.quotation_deadline THEN
    RETURN jsonb_build_object('ok',false,'error','CLOSED','message','This enquiry is no longer accepting quotes.'); END IF;
- IF p_making_charge_mode IS NULL OR p_making_charge_mode!=r.making_budget_mode OR p_making_charge_amount IS NULL OR p_making_charge_amount<=0 OR p_making_charge_amount>r.making_budget_amount
+ IF p_making_charge_mode IS NULL OR p_making_charge_mode NOT IN ('per_gram','fixed_total','percentage') OR (r.making_budget_mode IS NOT NULL AND p_making_charge_mode!=r.making_budget_mode) OR p_making_charge_amount IS NULL OR p_making_charge_amount<=0 OR (r.making_budget_amount IS NOT NULL AND p_making_charge_amount>r.making_budget_amount)
     OR (p_making_charge_mode='percentage' AND COALESCE(p_metal_estimate_amount,0)<=0) OR COALESCE(p_metal_estimate_amount,0)<0 OR COALESCE(p_gemstone_estimate_amount,0)<0 OR COALESCE(p_other_estimate_amount,0)<0
     OR p_proposed_delivery_date IS NULL OR p_proposed_delivery_date<CURRENT_DATE OR p_proposed_delivery_date>r.delivery_needed_date
     OR length(p_comments)>2000 THEN

@@ -8,6 +8,22 @@ from app.config import settings
 from app.logging import logger
 
 
+def is_quota_error(response: httpx.Response) -> bool:
+    if response.status_code != 429:
+        return False
+    try:
+        error = response.json().get("error", {})
+        return isinstance(error, dict) and (
+            error.get("type") == "insufficient_quota"
+            or error.get("code") in {
+                "insufficient_quota", "credit_balance_exhausted",
+                "project_spend_limit_exceeded", "organization_usage_limit_exceeded",
+            }
+        )
+    except (ValueError, AttributeError):
+        return False
+
+
 async def _request_with_retry(
     client: httpx.AsyncClient,
     method: str,
@@ -21,12 +37,12 @@ async def _request_with_retry(
     """Generic request helper with exponential back-off on 429/5xx."""
     response = await client.request(method, url, headers=headers, **kwargs)
 
-    # 429 means we're being throttled; 5xx means the upstream had a hiccup.
+    # Retry temporary throttling and server errors; billing needs operator action.
     # Both are worth retrying with a back-off — 4xx errors other than 429 are
     # our fault and retrying won't help.
     if (
         response.status_code == 429 or response.status_code >= 500
-    ) and retry_count < max_retries:
+    ) and not is_quota_error(response) and retry_count < max_retries:
         wait = 2**retry_count
         logger.warning(
             f"HTTP {response.status_code} from {url} — retrying in {wait}s ({retry_count + 1}/{max_retries})"

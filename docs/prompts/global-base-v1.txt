@@ -1,0 +1,721 @@
+
+JEWELINDIA
+LUXURY JEWELLERY PHOTOGRAPHY SYSTEM
+UNIVERSAL BASE PROMPT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PURPOSE
+
+Transform the wholesaler's raw jewellery photograph into a premium, studio-quality jewellery photograph while preserving the EXACT original jewellery product.
+
+IMPROVE THE PHOTOGRAPH, NOT THE PRODUCT.
+
+The source jewellery is the approved product. Do not redesign, reinterpret, modernize, beautify, simplify, complete, or replace it with generic jewellery.
+
+PROCESS:
+RAW SOURCE
+→ PRODUCT IDENTIFICATION
+→ COMMERCIAL REMOVAL
+→ PRODUCT FIDELITY LOCK
+→ SOURCE CORRECTION
+→ PROFESSIONAL PHOTOGRAPHY
+→ CATEGORY PHYSICAL PRESENTATION
+→ FINAL QC
+
+The category module supplied after this prompt controls ONLY category-specific physical behavior and presentation. This base controls all universal rules.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. INSTRUCTION PRIORITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When instructions conflict, prioritize:
+
+1. Original jewellery identity and fidelity
+2. Complete commercial/non-jewellery removal
+3. Exact product quantity and component preservation
+4. Physical/structural realism
+5. Source-supported detail only
+6. Product readability and completeness
+7. Lighting and photographic quality
+8. Background and styling
+
+Never sacrifice product fidelity or completeness for aesthetics.
+
+Never invent jewellery to improve an image.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. OUTPUT FORMAT — ABSOLUTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OUTPUT ASPECT RATIO: EXACTLY 1:1.
+
+Every generated image must be perfectly square with equal width and height.
+
+Never output 16:9, 4:3, 3:2, 9:16, portrait, landscape, or any other aspect ratio.
+
+DEFAULT OUTPUT COUNT: 3 IMAGES.
+MAXIMUM OUTPUT COUNT: 4 IMAGES.
+
+Every variant must represent the EXACT SAME PRODUCT.
+
+Variants may change camera angle, composition or approved presentation treatment, but may NEVER change:
+- Product identity
+- Quantity
+- Design
+- Structure
+- Proportions
+- Gemstones
+- Components
+- Product details
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. SOURCE PRODUCT IDENTIFICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before generation, identify the actual jewellery and separate it from everything surrounding it.
+
+Determine:
+- Exact number of jewellery pieces
+- Individual components
+- Main jewellery body
+- Chains, links, beads, stones, pendants and danglers
+- Connectors, clasps, hooks and posts
+- Decorative elements
+- Engravings, relief, openings and cavities
+- Source background and surface
+- Commercial tags, labels, stickers, watermarks and printed information
+
+A commercial attachment is NOT jewellery.
+A watermark is NOT jewellery.
+A price label is NOT jewellery.
+A background object is NOT jewellery.
+
+Preserve every actual jewellery component visible in the source.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. COMMERCIAL MARKING REMOVAL — ABSOLUTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE JEWELLERY IS THE PRODUCT.
+COMMERCIAL IDENTIFICATION MATERIAL IS NOT THE PRODUCT.
+
+Remove ALL non-jewellery commercial material, including:
+
+- Price tags
+- Price stickers
+- Price labels
+- Pricing information/numbers
+- Barcodes
+- SKU/inventory/category labels
+- Product cards/paper tags
+- Seller/store markings
+- Promotional text
+- Printed numbers/codes
+- Watermarks
+- Website names
+- Social media handles
+- Commercial logos not physically manufactured into the jewellery
+- Strings
+- Threads
+- Clips
+- Holders
+- Commercial attachment hardware
+
+PRICE TAG REMOVAL IS ABSOLUTE AND NON-NEGOTIABLE.
+
+NO PRICE INFORMATION MAY APPEAR ANYWHERE IN THE FINAL IMAGE.
+
+Never preserve, blur, hide, crop, relocate, recreate, replace or reinterpret commercial markings.
+
+Remove the complete commercial object and its attachments.
+
+If removal exposes background/fabric, reconstruct ONLY the minimum surrounding area necessary.
+
+NEVER INVENT JEWELLERY underneath a removed commercial object.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. PRODUCT FIDELITY — ABSOLUTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE SOURCE IS THE PRODUCT, NOT INSPIRATION.
+
+Preserve exactly:
+
+- Overall silhouette
+- Geometry
+- Proportions
+- Quantity
+- Component count and arrangement
+- Metal identity
+- Metal construction and thickness
+- Gemstone count
+- Gemstone size, shape, color and placement
+- Gemstone settings
+- Beads and pearls
+- Chains and links
+- Hooks, posts, clasps and bails
+- Pendants and danglers
+- Connectors
+- Engravings
+- Filigree
+- Carving
+- Relief
+- Borders
+- Grooves and ridges
+- Openings and cavities
+- Surface texture
+- Handcrafted irregularities
+- Intentional asymmetry
+
+Do NOT:
+- Add components
+- Remove components
+- Duplicate components
+- Merge components
+- Rearrange components
+- Change proportions
+- Change gemstone placement
+- Change gemstone color
+- Redesign motifs
+- Modernize the product
+- Simplify craftsmanship
+- Make it more ornate
+- Make it more symmetrical
+- Replace it with generic luxury jewellery
+
+The final jewellery must remain recognizably and structurally identical to the wholesaler's source.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. NEVER INVENT DETAILS — ABSOLUTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Only preserve details reliably visible or directly supported by the source.
+
+Poor source quality does NOT authorize guessing.
+
+If the source is:
+- Blurry
+- Noisy
+- Compressed
+- Poorly lit
+- Partially obstructed
+- Low resolution
+- Visually ambiguous
+
+DO NOT GUESS.
+DO NOT COMPLETE.
+DO NOT HALLUCINATE.
+DO NOT USE GENERIC JEWELLERY KNOWLEDGE.
+
+Never invent:
+- Gemstones
+- Beads
+- Chains
+- Links
+- Engravings
+- Filigree
+- Motifs
+- Prongs
+- Decorative elements
+- Hidden craftsmanship
+- Connectors
+- Attachment points
+
+Improve visibility of existing information only.
+
+WHEN UNCERTAIN:
+PRESERVE THE SOURCE.
+DO NOT INVENT.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. SOURCE IMAGE CORRECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Treat the wholesaler image as a raw source photograph.
+
+Correct photographic defects such as:
+- Poor exposure
+- Uneven lighting
+- Color casts
+- Phone-camera artifacts
+- Noise
+- Compression
+- Softness
+- Flat lighting
+- Distracting source shadows
+- Irrelevant background
+
+Improve photographic quality WITHOUT changing jewellery geometry, construction, proportions, quantity or details.
+
+Do not use correction as permission to redesign the product.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. PROFESSIONAL JEWELLERY LIGHTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Create controlled professional studio lighting suitable for premium jewellery photography.
+
+Use large, soft primary light to reveal:
+- Metal curvature
+- Relief
+- Engravings
+- Gemstone settings
+- Fine craftsmanship
+- Three-dimensional structure
+
+Use controlled fill to preserve darker details without flattening the jewellery.
+
+All lighting must belong to ONE coherent environment.
+
+Highlights, reflections and shadows must agree with the same light direction and physical setup.
+
+Never create:
+- Contradictory shadow directions
+- Impossible highlights
+- Random hotspots
+- Artificial glowing edges
+- Flat lighting that destroys depth
+
+Lighting reveals existing geometry. It does NOT create new geometry.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+9. METAL, GEMSTONE & MATERIAL REALISM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Metal must behave like real jewellery metal.
+
+Preserve the actual metal identity indicated by the source.
+
+Gold should appear:
+- Rich
+- Warm
+- Metallic
+- Refined
+- Physically reflective
+
+Never make gold:
+- Flat yellow
+- Neon
+- Orange plastic
+- Painted
+- CGI-like
+
+Metal reflections must follow surface geometry.
+
+Raised areas catch light.
+Recessed areas retain tonal depth.
+Curved surfaces produce changing reflections.
+
+Gemstones must retain source-supported:
+- Color
+- Size
+- Shape
+- Placement
+- Setting
+- Facet structure
+
+Never invent gemstone colors.
+Never enlarge or reposition stones.
+Never add random sparkle.
+
+Gemstone highlights must follow actual facet geometry.
+
+Pearls should retain natural soft lustre.
+
+Never make jewellery appear plastic, liquid, synthetic or digitally rendered.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+10. SHARPNESS, DETAIL & NOISE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Improve clarity and resolution while preserving existing source information.
+
+Remove:
+- Sensor noise
+- Digital grain
+- Compression artifacts
+- Color noise
+- Excessive JPEG artifacts
+
+The final jewellery should be crisp and professionally photographed.
+
+Do NOT over-smooth the product.
+Do NOT erase handcrafted texture.
+Do NOT create artificial detail through sharpening.
+
+SHARPNESS DOES NOT AUTHORIZE INVENTION.
+
+Only improve visibility of details that already exist.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+11. BACKGROUND & ENVIRONMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Replace irrelevant source environments with the premium JewelIndia studio treatment and the category module's approved presentation.
+
+Remove irrelevant source objects such as:
+- Tables
+- Shelves
+- Counters
+- Packaging
+- Cards
+- Hands
+- Tools
+- Other products
+- Random surfaces
+- Commercial objects
+
+unless explicitly required by the category module.
+
+Maintain the JewelIndia background philosophy:
+
+PREMIUM
+SOPHISTICATED
+CONTROLLED
+EDITORIAL
+CLEAN
+WARM/NEUTRAL WHERE APPROPRIATE
+TACTILE WHERE APPROPRIATE
+
+Do not introduce unnecessary props.
+
+Do not add:
+- Additional jewellery
+- Watches
+- Coins
+- Perfume
+- Flowers
+- Random stones
+- Packaging
+- Decorative objects
+
+unless explicitly required by the category module.
+
+When uncertain:
+KEEP THE ENVIRONMENT SIMPLE.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+12. SHADOW SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Shadows must communicate physical reality.
+
+Every shadow must agree with:
+- Light direction
+- Light size
+- Object position
+- Surface
+- Contact
+- Jewellery geometry
+
+Use natural, controlled studio shadows.
+
+Contact shadows appear ONLY where jewellery physically touches a surface or support.
+
+Suspended jewellery must NOT receive fake surface-contact shadows.
+
+Never create:
+- Hard black outlines
+- Detached shadows
+- Floating shadows
+- Black halos
+- Contradictory shadows
+- Shadows obscuring jewellery details
+
+Shadows exist to communicate depth and physical contact, not decoration.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+13. DEPTH & THREE-DIMENSIONAL RESPONSE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Restore depth through lighting and tonal separation.
+
+Raised elements should catch light.
+Recessed areas should remain recessed.
+Open cavities must remain open.
+Dark grooves must retain enough tonal depth to communicate their structure.
+
+Do NOT create fake geometry.
+Do NOT physically alter jewellery to manufacture depth.
+
+Lighting reveals existing geometry.
+
+All materials must respond according to their physical properties:
+- Metal
+- Gemstones
+- Pearls
+- Fabric
+- Authorized body surfaces
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+14. UNIVERSAL PHYSICAL REALISM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Apply realistic physical behavior according to actual jewellery construction and the category module.
+
+Rigid jewellery remains rigid.
+
+Flexible chains, strings, links and strands may respond naturally to gravity.
+
+Hanging components must obey gravity.
+
+Surface-resting jewellery must physically contact its support.
+
+Body-worn jewellery must physically interact with the authorized body surface.
+
+Every component must maintain believable:
+- Weight
+- Attachment
+- Contact
+- Continuity
+- Spatial separation
+
+Never create:
+- Floating jewellery
+- Impossible balancing
+- Clipping
+- Penetration
+- Broken connections
+- Impossible intersections
+- Weightless heavy components
+
+The category module controls category-specific physics.
+
+This base establishes ONLY universal physical realism.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+15. SILHOUETTE & EDGE INTEGRITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Preserve the exact jewellery silhouette through:
+
+- Background removal
+- Background replacement
+- Upscaling
+- Sharpening
+- Lighting
+- Shadows
+- Composition
+
+Do not:
+- Erode edges
+- Expand edges
+- Warp edges
+- Fill openings
+- Close cavities
+- Smooth away structural elements
+- Change the outer contour
+- Alter internal negative space
+
+No halos.
+No fringing.
+No background contamination.
+No artificial outlines.
+
+Commercial-marking removal must NEVER modify the jewellery silhouette.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+16. COMPOSITION & PRODUCT READABILITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Composition must serve the product.
+
+Priority:
+
+1. Product identity
+2. Product completeness
+3. Product detail
+4. Physical realism
+5. Visual hierarchy
+6. Aesthetics
+
+Adapt framing to the actual product.
+
+Long jewellery → provide sufficient vertical space.
+Wide jewellery → provide sufficient horizontal space.
+Compact jewellery → provide sufficient scale and breathing room.
+Complex jewellery → provide sufficient component separation.
+
+Never force jewellery into a composition that changes its physical form.
+
+Do not crop product-defining structures unless explicitly permitted by the category module.
+
+The jewellery must remain the dominant visual subject.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+17. CAMERA & PRESENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Use professional jewellery-photography perspective.
+
+Avoid:
+- Extreme wide-angle distortion
+- Fisheye perspective
+- Extreme foreshortening
+- Impossible camera angles
+- Angles that hide major product details
+
+Camera angle may vary between output variants, but jewellery geometry must NOT change.
+
+Jewellery must remain sharp and dominant.
+
+Do not introduce human body parts unless the category module explicitly requires them.
+
+When human presentation is authorized:
+- Use realistic anatomy
+- Preserve physical jewellery-to-body contact
+- Keep the required body area limited
+- Keep jewellery dominant
+- Never distort jewellery to fit the body
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+18. CATEGORY MODULE HIERARCHY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Apply the appropriate category module:
+
+Necklace
+Earrings
+Haram
+Pendant
+Rings
+Bangles
+Nosepins
+Mangalsutra
+Other
+
+The category module may control ONLY:
+- Category-specific physics
+- Gravity behavior
+- Surface interaction
+- Wearable placement
+- Hanging/resting behavior
+- Category-specific staging
+- Category-specific composition
+
+The category module may NEVER override:
+- Product fidelity
+- Exact quantity
+- Commercial removal
+- No-invention rule
+- Exact 1:1 output
+- Source-supported design
+
+If category instructions conflict with the source:
+PRESERVE THE SOURCE.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+19. FINAL QUALITY CONTROL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before finalizing, verify:
+
+FORMAT
+- Exact 1:1 aspect ratio
+- 3 outputs by default
+- Never more than 4
+
+PRODUCT
+- Exact same jewellery
+- Exact same quantity
+- Exact same components
+- Exact same design
+- Exact same proportions
+- Exact same gemstones
+- Exact same craftsmanship
+
+FIDELITY
+- Nothing invented
+- Nothing duplicated
+- Nothing omitted
+- Nothing redesigned
+- Nothing reinterpreted
+
+COMMERCIAL CLEANLINESS
+- No price
+- No price tag
+- No pricing information
+- No barcode
+- No SKU
+- No category/inventory label
+- No seller marking
+- No watermark
+- No website/social handle
+- No promotional text
+- No commercial attachment
+
+PHYSICAL REALISM
+- Rigid elements remain rigid
+- Flexible elements behave naturally
+- Gravity is believable
+- Attachments remain intact
+- Contact is believable
+- No floating
+- No clipping
+- No penetration
+- No impossible intersections
+
+PHOTOGRAPHY
+- Lighting is coherent
+- Shadows are coherent
+- Reflections follow geometry
+- Materials behave realistically
+- Colors remain source-accurate
+- Jewellery is sharp and dominant
+- Background is clean and controlled
+
+FINAL TEST:
+
+DOES THIS LOOK LIKE THE EXACT SAME WHOLESALER PRODUCT, JUST PHOTOGRAPHED PROFESSIONALLY?
+
+If NO:
+correct the PHOTOGRAPH,
+NOT THE JEWELLERY.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FINAL MANDATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE JEWELLERY IS THE PRODUCT.
+
+Improve:
+LIGHTING
+SHARPNESS
+COLOR
+DEPTH
+BACKGROUND
+COMPOSITION
+MATERIAL REALISM
+
+without changing:
+IDENTITY
+QUANTITY
+DESIGN
+CONSTRUCTION
+PROPORTIONS
+GEMSTONES
+ORNAMENTATION
+CRAFTSMANSHIP
+
+NOT A DIFFERENT PRODUCT.
+NOT GENERIC JEWELLERY.
+NOT AN AI INTERPRETATION.
+NOT A REDESIGN.
+
+THE SAME PRODUCT.
+THE SAME JEWELLERY.
+THE SAME DESIGN.
+THE SAME CRAFTSMANSHIP.
+ONLY A MUCH BETTER PHOTOGRAPH.
+
+PRICE TAG REMOVAL IS ABSOLUTE.
+COMMERCIAL MARKING REMOVAL IS ABSOLUTE.
+PRODUCT FIDELITY IS ABSOLUTE.
+SOURCE-SUPPORTED DETAIL IS ABSOLUTE.
+EXACT 1:1 OUTPUT IS ABSOLUTE.
+
+WHEN UNCERTAIN:
+
+PRESERVE THE SOURCE.
+DO NOT INVENT.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

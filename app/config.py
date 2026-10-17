@@ -1,6 +1,6 @@
 import logging
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 _log = logging.getLogger(__name__)
@@ -164,13 +164,16 @@ class Settings(BaseSettings):
     SUPABASE_JWT_SECRET: str = ""
 
     # ── Credits (Treasure Chest) ─────────────────────────────────────────────
-    # Master switch. Ships OFF so the rollout can be staged safely:
-    #   1. deploy this code with CREDITS_ENABLED=false — auth is enforced,
-    #      nothing is charged
-    #   2. run migrations/004_credits_treasure_chest.sql
-    #   3. verify wallets are populating, then flip this to true
-    # With it off, credit-bearing routes behave exactly as they did before.
+    # Metering may be bypassed only in explicitly local/test environments.
+    # The production image sets ENVIRONMENT=production; a stale false override
+    # must stop startup rather than silently allow unmetered work.
     CREDITS_ENABLED: bool = True
+
+    @model_validator(mode="after")
+    def require_production_credit_metering(self):
+        if not self.CREDITS_ENABLED and self.ENVIRONMENT.lower() not in {"development", "test"}:
+            raise ValueError("CREDITS_ENABLED must be true outside local development/tests")
+        return self
 
     # What a single AI call actually costs us, in paise, recorded into
     # credit_ledger.metadata on every debit. We bill a FLAT price — these are

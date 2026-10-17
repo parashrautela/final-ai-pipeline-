@@ -1,0 +1,205 @@
+RINGS
+
+Apply these rules specifically to rings while preserving all universal base-prompt rules. The source ring is the exact approved product. This module controls ring-specific presentation, fabric interaction, rigid geometry, resting physics, gemstone setting, scale, and composition.
+
+1. COMMERCIAL MARKING REMOVAL — ABSOLUTE
+
+Remove all non-jewellery commercial material, including price tags, price stickers/labels, barcodes, SKU/inventory/category labels, product cards, seller/store markings, watermarks, websites/social handles, promotional text, printed numbers/codes, commercial logos not physically manufactured into the jewellery, paper tags, strings, clips and holders.
+
+PRICE TAG REMOVAL IS ABSOLUTE.
+
+No price, barcode, SKU, commercial text, label, watermark, seller marking or commercial attachment may remain.
+
+Never preserve, blur, hide, crop, relocate, recreate or reinterpret commercial material. Remove the complete physical tag and attachments. If removal exposes the surface, reconstruct only the minimum surrounding area. Never invent jewellery hidden by a removed tag.
+
+2. SOFT WRINKLED FABRIC PRESENTATION
+
+Present the ring resting naturally on premium soft, textured, wrinkled fabric. The universal base prompt controls the fabric's color and overall photographic treatment.
+
+The ring is rigid; the fabric is soft.
+
+Fabric may contain:
+- Fine textile texture
+- Natural wrinkles and folds
+- Subtle elevation changes
+- Gentle compression at contact points
+
+The ring must sit ON the fabric, not float, hover, stand impossibly, balance unnaturally, sink deeply, or appear digitally isolated.
+
+Do not use a hard display stand.
+
+3. RESTING PHYSICS — ABSOLUTE
+
+The ring must behave like a small rigid object naturally placed on soft fabric.
+
+Allow it to settle according to its geometry and center of mass. Lower portions must make believable physical contact with the textile.
+
+A slight natural rotation or lean is acceptable, but do not rotate it enough to hide important details.
+
+Do not create artificial gaps, magnetic suspension, glue-like attachment, floating, deep penetration, or unstable balancing.
+
+The final result should look as though the ring was gently placed on the fabric and naturally came to rest.
+
+4. FABRIC INTERACTION
+
+At real contact points, fabric may compress subtly, nearby wrinkles may flatten slightly, folds may rise around the band, and soft contact shadows may appear.
+
+The fabric responds to the ring; the ring does not deform to the fabric.
+
+Do not create deep dents, excessive wrapping, fabric passing through the ring, mechanical wrinkles, artificial attachment, or impossible contact shadows.
+
+Keep the textile continuous and physically believable.
+
+5. RIGID RING GEOMETRY — ABSOLUTE
+
+Preserve the exact source geometry.
+
+Do not bend, flatten, stretch, compress, warp, or reshape the ring.
+
+Preserve:
+- Circumference
+- Band thickness
+- Outer curvature
+- Inner opening
+- Original proportions
+- Circular, oval, or irregular geometry
+
+A circular source remains circular. An intentionally oval/irregular source remains that exact form.
+
+The ring may change orientation through physical placement, but its geometry must never change to fit the composition or fabric.
+
+6. INNER OPENING & NEGATIVE SPACE
+
+The inner opening is part of the product.
+
+Preserve its exact shape, size, proportion and continuous inner circumference.
+
+The opening must remain open. Fabric may be visible through it where physically appropriate, but must never pass through the metal.
+
+Do not fill, close, distort or redesign the opening.
+
+7. GEMSTONE & TOP-HEAVY PHYSICS
+
+For rings with raised or heavy gemstones/settings, preserve the physical relationship between the setting and band.
+
+The setting must remain attached and supported by the original band.
+
+Do not allow the setting or gemstone to float, detach, sink independently, bend independently, rotate independently, or become disconnected.
+
+The ring may naturally settle according to its center of mass. If the source geometry naturally causes the stone to face slightly upward/toward the camera, preserve that readable orientation.
+
+Do not force the gemstone flat against the fabric or bury it.
+
+8. STONE SETTING INTEGRITY
+
+Preserve all source-supported:
+- Stone size
+- Stone shape
+- Stone color
+- Stone orientation
+- Stone placement
+- Prongs
+- Bezel
+- Side stones
+- Decorative borders
+- Setting height
+- Surrounding metal
+
+Do not invent or remove prongs, merge the stone into the metal, or make the gemstone appear printed onto the ring.
+
+The gemstone must remain seated inside its original setting.
+
+9. BAND DETAILS & CRAFTSMANSHIP
+
+Preserve visible:
+- Grooves
+- Ridges
+- Engravings
+- Braided patterns
+- Hammered textures
+- Ribbing
+- Filigree
+- Decorative cuts
+- Borders
+- Relief
+- Surface texture
+- Intentional irregularities/asymmetry
+
+Do not smooth textured metal into generic polished metal, fill grooves, erase engravings, merge ridges, or replace craftsmanship with generic CGI detail.
+
+10. FABRIC WRINKLES & PRODUCT VISIBILITY
+
+Use natural textile wrinkles, but keep them subordinate to the ring.
+
+Do not obscure the ring with large folds, place it inside a deep fabric valley, wrap fabric around it, allow wrinkles through the ring, or create mechanical folds.
+
+The complete ring must remain clearly inspectable.
+
+11. CONTACT SHADOW & MATERIAL RESPONSE
+
+Create subtle contact shadows at actual fabric contact points. Shadows must communicate the ring's elevation, curvature and gemstone setting while following the universal base lighting direction.
+
+Do not create black outlines, detached/floating shadows, dark halos, or excessive shadows that hide product detail.
+
+Metal reflections must follow the ring's three-dimensional geometry, including curved band surfaces, ridges, bezel edges, prongs and relief.
+
+Do not make metal plastic, liquid, painted, glowing or CGI-like.
+
+Gemstone highlights must follow actual stone/facet geometry. Do not add random sparkle.
+
+12. SCALE & COMPOSITION
+
+Maintain believable physical scale.
+
+The ring should read as a small jewellery object resting on a larger textile surface. Do not enlarge it simply to fill the frame or shrink it until important details become unreadable.
+
+Provide enough surrounding fabric to establish physical contact while keeping the complete ring dominant.
+
+Use a premium jewellery-photography angle that clearly communicates:
+- Outer band
+- Inner opening
+- Main gemstone
+- Side details
+- Band texture
+- Setting
+- Fabric contact
+
+Avoid extreme perspective or rotations that hide important craftsmanship.
+
+13. SOURCE DESIGN LOCK
+
+Do not redesign the ring.
+
+Do not add/remove stones, change gemstone size/shape/color/placement, add/remove decorative elements, alter band thickness/diameter, change engravings or setting geometry, invent hidden details, or replace the source with a generic luxury ring.
+
+Only photographic treatment, staging, lighting, background and physically plausible resting orientation may change.
+
+14. FINAL VALIDATION
+
+Verify:
+- Ring rests naturally on soft wrinkled fabric.
+- Ring is rigid, stable and physically supported.
+- Fabric responds subtly at contact points.
+- No floating, deep penetration or impossible balancing.
+- Original circumference, opening, thickness, curvature and proportions are preserved.
+- Gemstone and setting remain structurally correct.
+- Craftsmanship remains intact.
+- No components are invented, removed or duplicated.
+- No price tag, barcode, SKU, label, watermark, seller marking, pricing text or commercial attachment remains.
+- Metal and gemstone reflections follow real geometry.
+- Ring remains sharp, complete and dominant.
+
+FINAL RULE:
+
+THE RING IS THE PRODUCT.
+THE FABRIC IS ONLY THE PRESENTATION SURFACE.
+THE RING MUST CONFORM TO REAL PHYSICS.
+THE FABRIC MUST RESPOND TO THE RING.
+ORIGINAL RING GEOMETRY IS NON-NEGOTIABLE.
+PRICE TAG REMOVAL IS NON-NEGOTIABLE.
+COMMERCIAL MARKING REMOVAL IS NON-NEGOTIABLE.
+SOURCE PRODUCT FIDELITY IS NON-NEGOTIABLE.
+
+WHEN UNCERTAIN:
+PRESERVE THE SOURCE.
+DO NOT INVENT.

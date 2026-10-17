@@ -1,0 +1,213 @@
+ MANGALSUTRA
+
+Apply these rules specifically to Mangalsutra jewellery while preserving all universal base-prompt rules. Treat it as a neck piece following the established neck-piece/U-shape presentation logic. Do not introduce alternative staging unless explicitly stated below.
+
+1. COMMERCIAL MARKING REMOVAL — ABSOLUTE
+
+The Mangalsutra is the only approved product. Remove ALL non-jewellery commercial material, including price tags/stickers/labels, barcodes, SKU/inventory/category labels, product cards/paper tags, seller markings, promotional text, pricing/numbers/codes, watermarks, websites/social handles, non-product commercial logos, strings, threads, clips and holders used for identification.
+
+PRICE TAG REMOVAL IS ABSOLUTE.
+
+No price, barcode, SKU, category marking, seller marking, watermark, promotional text or commercial attachment may remain.
+
+Never preserve, blur, hide, crop, relocate, recreate, replace or reinterpret commercial markings. Remove the complete physical tag and attachments. If removal exposes background, reconstruct only the minimum surrounding area. Never invent jewellery hidden by a removed commercial object.
+
+2. PRODUCT FIDELITY — ABSOLUTE
+
+The source Mangalsutra is the exact approved product.
+
+Preserve:
+- Overall silhouette and total length
+- Chain construction
+- Number of strands
+- Black/gold bead count, sequence and spacing
+- Pendant/vati/medallion structure
+- Gemstones and settings
+- Decorative motifs, filigree, engravings and relief
+- Links, connectors and clasps
+- Danglers
+- Openings/cavities
+- Surface texture
+- Original gold construction
+- Handcrafted irregularities
+
+Do not redesign, simplify, modernize, beautify, add, remove, duplicate or rearrange anything. Do not change proportions, bead arrangement, pendant design, gemstone placement, strand count or chain construction.
+
+The source is the product, not inspiration.
+
+3. LONG / U-SHAPE PHYSICS
+
+Treat the Mangalsutra as a long neck piece with the exact U-shaped or elongated curved silhouette visible in the source.
+
+Preserve:
+- Original U depth
+- Total length
+- Side curvature
+- Width
+- Central lowest point
+- Natural transition toward the pendant
+
+The chain must fall naturally under gravity, maintain believable tension and remain continuously connected.
+
+Do not:
+- Convert it into a short necklace
+- Flatten the U
+- Deepen the U artificially
+- Turn a shallow curve into an exaggerated U
+- Stretch or compress the chain unnaturally
+
+The source-defined silhouette is authoritative.
+
+4. BLACK & GOLD BEAD DISTRIBUTION
+
+Preserve the exact sequence, count, size, color, spacing and placement of black beads, gold beads, decorative beads and connecting links.
+
+Do not:
+- Add/remove beads
+- Randomize spacing
+- Merge adjacent beads
+- Change bead size/color
+- Replace beads with generic spheres
+- Turn multiple beads into a continuous chain
+- Create symmetry that does not exist in the source
+
+Natural curvature may create slight spacing variation, but the underlying product structure must remain unchanged.
+
+5. CHAIN TENSION & GRAVITY
+
+The chain is flexible and must behave like a real chain.
+
+Maintain believable tension between both sides. Chains must not float, become rigid without reason, stretch unnaturally, form impossible sharp bends, pass through themselves, pass through decorative elements or become disconnected.
+
+If multiple strands exist, each must maintain its own physical continuity and believable curvature.
+
+6. PENDANT / VATI WEIGHT
+
+The central pendant, vati, medallion or heavy decorative element must respond to its actual weight.
+
+Heavy components naturally settle toward the appropriate lowest point. The supporting chain should visually carry the pendant's weight.
+
+Preserve the actual attachment point and original orientation.
+
+Do not float, detach, excessively rotate, deform or change the pendant. Never allow the chain to pass through it.
+
+7. MULTI-STRAND INTEGRITY
+
+If multiple strands exist, preserve every strand exactly.
+
+Each strand must remain:
+- Individually identifiable
+- Physically continuous
+- Correctly spaced
+- Correctly connected
+- Consistent with the source
+
+Do not merge, remove, duplicate or randomly change strand lengths.
+
+Allow subtle curvature differences caused by natural weight while preserving the original overall silhouette.
+
+8. CONNECTORS & LINKS
+
+Preserve every visible link, loop, connector, clasp, bead connection and pendant attachment.
+
+No:
+- Broken links
+- Floating connectors
+- Detached beads
+- Missing attachment points
+- Merged links
+- Chains passing through beads/pendants
+- Impossible intersections
+- Duplicated connectors
+
+Fine chains must remain fine. Do not convert detailed links into generic smooth metallic strips.
+
+9. DANGLERS & SMALL ELEMENTS
+
+All hanging beads, pearls, chains and decorative drops must respond naturally to gravity.
+
+Preserve their original number, size, spacing, placement and structure.
+
+They must hang from their actual attachment points and remain individually readable.
+
+Allow slight natural variation in orientation, but never create floating sideways elements, merged danglers, clipping or invented decorative pieces.
+
+10. DISPLAY & COMPOSITION
+
+Follow the universal neck-piece presentation logic.
+
+The Mangalsutra must be:
+- Presented vertically
+- Fully visible from top to bottom
+- Naturally hung
+- Gravity-respecting
+- Composed within the established 1:1 frame
+- Presented using the environment defined by the base prompt
+
+Do not place it flat on a table, fold it unnaturally, compress its length, or crop the upper chain or central pendant.
+
+The complete Mangalsutra must remain readable.
+
+11. SILHOUETTE LOCK
+
+During enhancement, background replacement, sharpening, lighting and composition, preserve the exact jewellery boundary.
+
+Do not erode, expand, warp or smooth away small chain details. Do not change U-shape, length, width, strand positions or central pendant silhouette.
+
+Commercial-tag removal must never modify the jewellery itself.
+
+12. SOURCE PROXIMITY — ABSOLUTE
+
+Stay extremely close to the wholesaler's original product.
+
+Do not use the source as loose inspiration or reinterpret it into a more generic/aesthetically pleasing Mangalsutra.
+
+Do not change:
+- Motifs
+- Beads
+- Pendant
+- Gemstones
+- Chain construction
+- Proportions
+- Length
+- Decorative details
+
+If a source section is unclear, preserve only what is reliably visible.
+
+NEVER INVENT HIDDEN JEWELLERY OR CRAFTSMANSHIP.
+
+13. FINAL VALIDATION
+
+Verify:
+- Complete Mangalsutra visible
+- Original length and U/curved silhouette preserved
+- Correct strand count and spacing
+- Black/gold bead distribution preserved
+- Pendant/vati correctly positioned and attached
+- Chain tension and gravity believable
+- All connectors intact
+- Danglers hang naturally
+- No jewellery invented, duplicated, removed or redesigned
+- No price/pricing information
+- No price tag/sticker/label
+- No barcode/SKU/inventory/category marking
+- No watermark/seller/website/social marking
+- No paper tag, string, clip or commercial attachment
+- No commercial marking transformed into jewellery
+
+FINAL RULE:
+
+THE MANGALSUTRA IS THE PRODUCT.
+
+THE SOURCE DESIGN IS THE AUTHORITY.
+
+PHYSICAL REALISM MUST SERVE THE SOURCE.
+
+PRICE TAG REMOVAL IS NON-NEGOTIABLE.
+COMMERCIAL MARKING REMOVAL IS NON-NEGOTIABLE.
+ORIGINAL PRODUCT FIDELITY IS NON-NEGOTIABLE.
+SOURCE DESIGN MUST NOT BE REINTERPRETED.
+
+WHEN UNCERTAIN:
+PRESERVE THE SOURCE.
+DO NOT INVENT.

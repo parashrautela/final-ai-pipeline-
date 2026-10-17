@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import math
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -16,7 +18,7 @@ from app.db.repository import (
     update_chamak_generation,
 )
 from app.logging import logger
-from app.services.ai import nanobana_client, openai_image_client
+from app.services.ai import nanobana_client, openai_image_client, _request_with_retry, is_quota_error
 from app.services.storage import (
     fetch_image_bytes_and_content_type,
     upload_chamak_output,
@@ -87,15 +89,12 @@ async def call_openai_vision_analysis(
     }
 
     async with httpx.AsyncClient(timeout=90.0) as client:
-        resp = await client.post(
-            "https://api.openai.com/v1/chat/completions",
+        resp = await _request_with_retry(
+            client, "POST", "https://api.openai.com/v1/chat/completions",
+            max_retries=settings.MAX_RETRIES,
             headers=headers,
             json=payload,
         )
-        if not resp.is_success:
-            logger.error(f"OpenAI API error {resp.status_code}: {resp.text}")
-            resp.raise_for_status()
-
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
         parsed = json.loads(content)
@@ -185,7 +184,7 @@ async def run_stage1_vision_analysis(
             logger.error(f"Chamak generation {generation_id} not found")
             return
 
-        await update_chamak_generation(generation_id, {"status": "analyzing"})
+        await update_chamak_generation(generation_id, {"status": "analyzing", "error_message": None, "stage1_analysis_json": None, "content_flag_hit": None})
 
         img1_url = row.get("source_image_1_url")
         img2_url = row.get("source_image_2_url")
@@ -236,7 +235,15 @@ async def run_stage1_vision_analysis(
             sentry_sdk.capture_exception(exc)
 
         try:
-            await update_chamak_generation(generation_id, {"status": "failed"})
+            await update_chamak_generation(generation_id, {
+                "status": "failed",
+                "error_message": (
+                    "Chamak analysis is unavailable because the AI service has exhausted its provider credits. "
+                    "Please contact support; uploading the images again will not resolve this."
+                    if isinstance(exc, httpx.HTTPStatusError) and is_quota_error(exc.response)
+                    else "Design analysis could not complete. Please try again or contact support."
+                ),
+            })
         except Exception:
             logger.error(f"Failed to persist failure status for {generation_id}", exc_info=True)
 
@@ -253,75 +260,50 @@ def compile_chamak_prompt(
     form_input = form_input or {}
     jewelry_type = (analysis.get("jewelry_type") or "luxury jewelry").strip()
 
-    img1_strengths = analysis.get("image1_strengths") or [
-        "intricate filigree craftsmanship",
-        "radiant high-carat gold finish",
-        "precision prong stone setting",
-    ]
-    img2_weaknesses = analysis.get("image2_weaknesses") or [
-        "clunky base geometry",
-        "overly heavy accents",
-    ]
+    img1_strengths = analysis.get("image1_strengths") or []
+    img2_weaknesses = analysis.get("image2_weaknesses") or []
     img2_strengths = analysis.get("image2_strengths") or []
 
-    # Parse slider weights if present
-    slider_weights: dict[str, float] = {}
-    if isinstance(form_input, dict):
-        raw_weights = form_input.get("slider_weights") or form_input.get("weights") or {}
-        if isinstance(raw_weights, dict):
-            for k, v in raw_weights.items():
-                try:
-                    slider_weights[k] = float(v)
-                except (ValueError, TypeError):
-                    pass
-
-    # Prompt synthesis sections
-    fusion_directives: list[str] = []
-
-    # Primary hero directive
-    hero_traits = ", ".join(img1_strengths[:4])
-    fusion_directives.append(
-        f"Masterpiece luxury {jewelry_type} design fusion. "
-        f"Prominently retain and elevate the hero craftsmanship features of Design 1: {hero_traits}."
-    )
-
-    # Replacement directive
-    if img2_weaknesses:
-        weakness_text = ", ".join(img2_weaknesses[:3])
-        fusion_directives.append(
-            f"Refine and eliminate the heavy and unrefined elements ({weakness_text}), "
-            f"seamlessly replacing them with graceful, high-elegance contours and balanced proportions."
-        )
-
-    # Secondary strengths directive
-    if img2_strengths:
-        sec_traits = ", ".join(img2_strengths[:2])
-        fusion_directives.append(
-            f"Subtly integrate the best complementary accents: {sec_traits}."
-        )
-
-    # Slider weighting integration: map attribute IDs to actual feature names
-    if slider_weights:
-        high_features: list[str] = []
-        low_features: list[str] = []
-        for k, w in slider_weights.items():
-            feature_name = k.replace("_", " ")
-            if k.startswith("attr_"):
-                try:
-                    idx = int(k.split("attr_")[1])
-                    if idx < len(img1_strengths):
-                        feature_name = img1_strengths[idx]
-                except (ValueError, IndexError):
-                    pass
-            if w >= 0.6:
-                high_features.append(feature_name)
-            elif w < 0.4:
-                low_features.append(feature_name)
-
-        if high_features:
-            fusion_directives.append(f"Emphasize strong presence of: {', '.join(high_features)}.")
-        if low_features:
-            fusion_directives.append(f"Keep subtle and delicate: {', '.join(low_features)}.")
+    # Both clients display 0 as Design 1 and 1 as Design 2. Older web
+    # clients saved a flat 0–100 dictionary instead of slider_weights.
+    raw_weights = form_input.get("slider_weights") or form_input.get("weights")
+    legacy_web = raw_weights is None
+    raw_weights = form_input if legacy_web else raw_weights
+    contexts = {
+        item["id"]: item for item in (form_input.get("attribute_context") or [])
+        if isinstance(item, dict) and "id" in item
+    }
+    fusion_directives = [
+        f"Masterpiece luxury {jewelry_type} design fusion from Design 1 and Design 2. "
+        "Create one coherent piece. Follow the per-attribute design proportions below; "
+        "neither reference automatically takes priority.",
+        f"Design 1 observed features: {', '.join(img1_strengths)}.",
+        f"Design 2 observed features: {', '.join(img2_strengths)}.",
+    ]
+    if isinstance(raw_weights, dict):
+        for key, value in raw_weights.items():
+            try:
+                weight = float(value) / (100 if legacy_web else 1)
+            except (ValueError, TypeError):
+                continue
+            if not math.isfinite(weight) or not 0 <= weight <= 1:
+                continue
+            context = contexts.get(key, {})
+            feature = context.get("attribute") or key.replace("_", " ")
+            first = context.get("image1_feature") or "the corresponding feature in Design 1"
+            second = context.get("image2_feature") or "the corresponding feature in Design 2"
+            if key.startswith("attr_") and key[5:].isdigit():
+                index = int(key[5:])
+                if index < len(img1_strengths):
+                    first = img1_strengths[index]
+                    feature = context.get("attribute") or first
+                if index < len(img2_weaknesses):
+                    second = img2_weaknesses[index]
+            fusion_directives.append(
+                f"{feature}: {(1-weight)*100:g}% Design 1 ({first}); "
+                f"{weight*100:g}% Design 2 ({second}). "
+                "A 0% contribution must not influence this attribute."
+            )
 
     # Artisan custom note
     if note and note.strip():
@@ -339,6 +321,73 @@ def compile_chamak_prompt(
 
     compiled_prompt = " ".join(fusion_directives)
     return compiled_prompt
+
+
+def _prior_attempts(row: dict) -> list[dict]:
+    """Fusion attempts already made on this row, oldest first.
+
+    A row finished before output_history existed (migration 028) still has its
+    one image on output_image_url; count it as attempt 1 so a retry adds to it
+    rather than dropping it. Its slider weights are unknown — the form on the
+    row is the one just submitted for the retry, not the one that made it.
+    """
+    history = row.get("output_history")
+    if isinstance(history, list) and history:
+        return list(history)
+    if row.get("output_image_url"):
+        return [{
+            "attempt": 1,
+            "path": row["output_image_url"],
+            "variants": row.get("output_variants") or {},
+            "slider_weights": None,
+            "note": None,
+            "created_at": row.get("completed_at"),
+        }]
+    return []
+
+
+def _upload_attempt(file_content: bytes, wholesaler_id: str, generation_id: str):
+    """Store one render at its own path so a retry can't overwrite the last one.
+
+    '{wholesaler_id}/{generation_id}/{render_id}.png' — the storage policy keys
+    on the first folder (the wholesaler), so the extra segment is safe.
+    """
+    return upload_chamak_output(
+        file_content=file_content,
+        wholesaler_id=wholesaler_id,
+        generation_id=f"{generation_id}/{uuid.uuid4()}",
+    )
+
+
+async def _record_attempt(
+    generation_id: str,
+    prior: list[dict],
+    stored_output,
+    form_json: dict,
+    note_text: Optional[str],
+    completed_at: str,
+) -> None:
+    """Append this render to output_history before the row is marked done.
+
+    Written first so the app sees the full history the moment it polls 'done'.
+    Never fatal: the image is generated and paid for by now, so a missing
+    column (migration 028 not applied) only costs the history, not the result.
+    """
+    history = prior + [{
+        "attempt": len(prior) + 1,
+        "path": stored_output.url,
+        "variants": stored_output.variants or {},
+        "slider_weights": form_json.get("slider_weights") or form_json.get("weights"),
+        "note": note_text,
+        "created_at": completed_at,
+    }]
+    try:
+        await update_chamak_generation(generation_id, {"output_history": history})
+    except Exception as exc:
+        logger.warning(
+            f"Could not save output_history for {generation_id} — keeping the result without it: {exc}",
+            extra={"generation_id": generation_id},
+        )
 
 
 async def run_stage4_generation(
@@ -377,15 +426,14 @@ async def run_stage4_generation(
             prompt=compiled_prompt,
         )
 
-        # Upload to Supabase Storage private bucket 'chamak-outputs' at '{wholesaler_id}/{generation_id}.png'
-        stored_output = upload_chamak_output(
-            file_content=generated_bytes,
-            wholesaler_id=wholesaler_id,
-            generation_id=generation_id,
-        )
+        # Upload to the private 'chamak-outputs' bucket, one path per attempt
+        stored_output = _upload_attempt(generated_bytes, wholesaler_id, generation_id)
         output_storage_path = stored_output.url
 
         completed_at = datetime.now(timezone.utc).isoformat()
+        await _record_attempt(
+            generation_id, _prior_attempts(row), stored_output, form_json, note_text, completed_at
+        )
 
         # Update chamak_generations record
         await update_chamak_generation(
@@ -489,14 +537,13 @@ async def run_stage4_generation_openai(
             prompt=compiled_prompt,
         )
 
-        stored_output = upload_chamak_output(
-            file_content=generated_bytes,
-            wholesaler_id=wholesaler_id,
-            generation_id=generation_id,
-        )
+        stored_output = _upload_attempt(generated_bytes, wholesaler_id, generation_id)
         output_storage_path = stored_output.url
 
         completed_at = datetime.now(timezone.utc).isoformat()
+        await _record_attempt(
+            generation_id, _prior_attempts(row), stored_output, form_json, note_text, completed_at
+        )
 
         await update_chamak_generation(
             generation_id,

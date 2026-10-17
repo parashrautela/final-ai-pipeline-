@@ -51,7 +51,7 @@ class TestChamakPipeline(unittest.TestCase):
 
         self.assertIn("necklace", prompt)
         self.assertIn("intricate filigree craftsmanship", prompt)
-        self.assertIn("clunky base geometry", prompt)
+        self.assertIn("80% Design 2", prompt)
         self.assertIn("emerald centerpiece", prompt)
         self.assertIn("filigree", prompt)
         self.assertIn("Make the filigree extra delicate", prompt)
@@ -95,7 +95,7 @@ class TestChamakPipeline(unittest.TestCase):
                 await run_stage1_vision_analysis(gen_id)
 
                 # Check update calls
-                mock_update.assert_any_call(gen_id, {"status": "analyzing"})
+                mock_update.assert_any_call(gen_id, {"status": "analyzing", "error_message": None, "stage1_analysis_json": None, "content_flag_hit": None})
                 mock_update.assert_called_with(
                     gen_id,
                     {
