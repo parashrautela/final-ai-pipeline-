@@ -6,8 +6,10 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,6 +28,11 @@ MODEL_URL = f"https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/{MODEL
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 50_000_000
 MIN_SIMILARITY = 0.90  # Retrieval score, not a measured accuracy percentage.
+# The index refreshes every minute and every attempt downloads the full image,
+# so a product that fails must not be retried each cycle: 7 unusable photos
+# cost ~34 GB/day of Supabase cached egress. Transient failures (network, 5xx)
+# wait this long; unusable photos (InvalidPhoto) wait until their URL changes.
+FAILED_RETRY_SECONDS = 6 * 60 * 60
 COLUMNS = "id,jewellery_type,is_published,raw_image_url,processed_image_url,image_url,generated_image_urls,showcase_image_urls"
 
 
@@ -163,6 +170,7 @@ class CatalogueIndex:
         self.cache_path = cache_path or Path(os.getenv("IMAGE_SEARCH_INDEX_PATH", str(Path.home() / ".cache/jewel-image-search/index.json")))
         self.vectors: dict[str, np.ndarray] = {}
         self.failed: set[str] = set()
+        self.retry_at: dict[str, float] = {}  # failed key -> time.monotonic() after which to try again (inf = never)
         self.fingerprints: dict[str, dict] = {}
         self.refresh_lock = asyncio.Lock()
         self.refresh_task = None
@@ -223,11 +231,14 @@ class CatalogueIndex:
                 self.vectors = {key: vector for key, vector in self.vectors.items() if key in keys}
                 self.fingerprints = {key: value for key, value in self.fingerprints.items() if key in keys}
                 self.failed.intersection_update(keys)
+                self.retry_at = {key: when for key, when in self.retry_at.items() if key in keys}
                 concurrency = asyncio.Semaphore(4)
                 async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
                     async def index(row):
                         key = cache_key(row)
                         if key in self.vectors and key in self.fingerprints:
+                            return
+                        if key in self.failed and self.retry_at.get(key, 0) > time.monotonic():
                             return
                         async with concurrency:
                             try:
@@ -236,10 +247,17 @@ class CatalogueIndex:
                                     self.vectors[key] = await asyncio.to_thread(self.encoder.embed, photo)
                                 self.fingerprints[key] = await asyncio.to_thread(visual_fingerprint, photo)
                                 self.failed.discard(key)
+                                self.retry_at.pop(key, None)
                             except asyncio.CancelledError:
                                 raise
+                            except InvalidPhoto:
+                                # The image itself is unusable (e.g. no jewellery isolated),
+                                # so the same URL fails identically; a new URL is a new key.
+                                self.failed.add(key)
+                                self.retry_at[key] = math.inf
                             except Exception:
                                 self.failed.add(key)
+                                self.retry_at[key] = time.monotonic() + FAILED_RETRY_SECONDS
                     await asyncio.gather(*(index(row) for row in rows))
                 snapshot = {key: vector.tolist() for key, vector in self.vectors.items()}
                 await asyncio.to_thread(self.persist, snapshot)
