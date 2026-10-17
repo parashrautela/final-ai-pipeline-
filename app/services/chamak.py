@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -341,6 +342,73 @@ def compile_chamak_prompt(
     return compiled_prompt
 
 
+def _prior_attempts(row: dict) -> list[dict]:
+    """Fusion attempts already made on this row, oldest first.
+
+    A row finished before output_history existed (migration 028) still has its
+    one image on output_image_url; count it as attempt 1 so a retry adds to it
+    rather than dropping it. Its slider weights are unknown — the form on the
+    row is the one just submitted for the retry, not the one that made it.
+    """
+    history = row.get("output_history")
+    if isinstance(history, list) and history:
+        return list(history)
+    if row.get("output_image_url"):
+        return [{
+            "attempt": 1,
+            "path": row["output_image_url"],
+            "variants": row.get("output_variants") or {},
+            "slider_weights": None,
+            "note": None,
+            "created_at": row.get("completed_at"),
+        }]
+    return []
+
+
+def _upload_attempt(file_content: bytes, wholesaler_id: str, generation_id: str):
+    """Store one render at its own path so a retry can't overwrite the last one.
+
+    '{wholesaler_id}/{generation_id}/{render_id}.png' — the storage policy keys
+    on the first folder (the wholesaler), so the extra segment is safe.
+    """
+    return upload_chamak_output(
+        file_content=file_content,
+        wholesaler_id=wholesaler_id,
+        generation_id=f"{generation_id}/{uuid.uuid4()}",
+    )
+
+
+async def _record_attempt(
+    generation_id: str,
+    prior: list[dict],
+    stored_output,
+    form_json: dict,
+    note_text: Optional[str],
+    completed_at: str,
+) -> None:
+    """Append this render to output_history before the row is marked done.
+
+    Written first so the app sees the full history the moment it polls 'done'.
+    Never fatal: the image is generated and paid for by now, so a missing
+    column (migration 028 not applied) only costs the history, not the result.
+    """
+    history = prior + [{
+        "attempt": len(prior) + 1,
+        "path": stored_output.url,
+        "variants": stored_output.variants or {},
+        "slider_weights": form_json.get("slider_weights") or form_json.get("weights"),
+        "note": note_text,
+        "created_at": completed_at,
+    }]
+    try:
+        await update_chamak_generation(generation_id, {"output_history": history})
+    except Exception as exc:
+        logger.warning(
+            f"Could not save output_history for {generation_id} — keeping the result without it: {exc}",
+            extra={"generation_id": generation_id},
+        )
+
+
 async def run_stage4_generation(
     generation_id: str, charge: Optional[dict] = None
 ) -> None:
@@ -377,15 +445,14 @@ async def run_stage4_generation(
             prompt=compiled_prompt,
         )
 
-        # Upload to Supabase Storage private bucket 'chamak-outputs' at '{wholesaler_id}/{generation_id}.png'
-        stored_output = upload_chamak_output(
-            file_content=generated_bytes,
-            wholesaler_id=wholesaler_id,
-            generation_id=generation_id,
-        )
+        # Upload to the private 'chamak-outputs' bucket, one path per attempt
+        stored_output = _upload_attempt(generated_bytes, wholesaler_id, generation_id)
         output_storage_path = stored_output.url
 
         completed_at = datetime.now(timezone.utc).isoformat()
+        await _record_attempt(
+            generation_id, _prior_attempts(row), stored_output, form_json, note_text, completed_at
+        )
 
         # Update chamak_generations record
         await update_chamak_generation(
@@ -489,14 +556,13 @@ async def run_stage4_generation_openai(
             prompt=compiled_prompt,
         )
 
-        stored_output = upload_chamak_output(
-            file_content=generated_bytes,
-            wholesaler_id=wholesaler_id,
-            generation_id=generation_id,
-        )
+        stored_output = _upload_attempt(generated_bytes, wholesaler_id, generation_id)
         output_storage_path = stored_output.url
 
         completed_at = datetime.now(timezone.utc).isoformat()
+        await _record_attempt(
+            generation_id, _prior_attempts(row), stored_output, form_json, note_text, completed_at
+        )
 
         await update_chamak_generation(
             generation_id,
