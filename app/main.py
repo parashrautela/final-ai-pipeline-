@@ -1,3 +1,4 @@
+from app.features import require_feature
 import asyncio
 import hashlib
 import uuid
@@ -782,7 +783,7 @@ async def chamak_analyze(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = Depends(require_user),
+    user_id: Optional[str] = Depends(require_feature("chamak")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Trigger Stage 1 vision analysis for a Chamak jewelry fusion job.
@@ -834,7 +835,7 @@ async def chamak_generate(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = Depends(require_user),
+    user_id: Optional[str] = Depends(require_feature("chamak")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Trigger Stage 3 prompt compilation & Stage 4 image generation.
@@ -897,7 +898,7 @@ async def chamak_generate_v2(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = Depends(require_user),
+    user_id: Optional[str] = Depends(require_feature("chamak")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Chamak 2.0 — the same fusion, rendered by OpenAI instead of Nanobana.
