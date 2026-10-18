@@ -1,10 +1,11 @@
+from __future__ import annotations
+from app.features import is_feature_blocked
 """Durable reconciliation scheduler and outbox dispatcher for manufacturing requests.
 
 Uses PostgreSQL row locks with SKIP LOCKED to prevent duplicate processing across
 concurrent worker replicas, and dispatches push notifications via HTTP/2 APNs.
 """
 
-from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
@@ -261,6 +262,14 @@ class ManufacturingScheduler:
                 for item in claimed_batch:
                     outbox_id = item["id"]
                     recipient_user_id = item["recipient_user_id"]
+
+                    if is_feature_blocked(recipient_user_id, "custom_inquiries"):
+                        logger.info(f"Skipping push notification for disabled wholesaler {recipient_user_id}")
+                        sb.table("manufacturing_notification_outbox").update({
+                            "status": "dropped_feature_disabled",
+                            "last_error": "custom_inquiries feature is disabled for this user",
+                        }).eq("id", outbox_id).execute()
+                        continue
                     kind = item["kind"]
                     payload = item.get("payload") or {}
                     attempts = item.get("attempts", 1)

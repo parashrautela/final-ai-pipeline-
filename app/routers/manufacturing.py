@@ -1,10 +1,11 @@
+from __future__ import annotations
+from app.features import require_feature, is_feature_blocked
 """FastAPI Router for Native Jewellery Request Broadcast and Wholesaler Queue.
 
 Enforces strict DB-verified authentication for retailers and wholesalers.
 Preserves existing systems, zero side effects on credits or catalogue searches.
 """
 
-from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timezone
@@ -529,6 +530,8 @@ async def list_wholesaler_offers(
     wholesaler: dict = Depends(require_verified_wholesaler),
 ):
     """List offers addressed to caller's verified wholesaler account."""
+    if is_feature_blocked(wholesaler["user_id"], "custom_inquiries"):
+        return []
     def _fetch():
         sb = get_supabase()
         now = datetime.now(timezone.utc)
@@ -603,6 +606,7 @@ async def list_wholesaler_offers(
 async def get_wholesaler_offer_detail(
     offer_id: uuid.UUID,
     wholesaler: dict = Depends(require_verified_wholesaler),
+    _feature_check: None = Depends(require_feature("custom_inquiries")),
 ):
     """Detailed view of an offer addressed to caller, with authoritative remaining countdown."""
     def _fetch():
@@ -700,6 +704,7 @@ async def accept_manufacturing_offer(
     payload: AcceptOfferPayload,
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     wholesaler: dict = Depends(require_verified_wholesaler),
+    _feature_check: None = Depends(require_feature("custom_inquiries")),
 ):
     """Wholesaler accepts offer with binding quote and delivery commitment.
 
