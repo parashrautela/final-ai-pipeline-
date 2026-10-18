@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import pytest
@@ -120,7 +121,7 @@ def test_privileges_and_rls(db_conn):
         """)
         res = conn.execute('SELECT public.my_features();').fetchone()[0]
         assert isinstance(res, dict)
-        assert res.get('chamak') is True
+        assert res.get('chamak') == {'available': True, 'message': None}
 
 def test_audit_append_only(db_conn):
     with psycopg.connect(db_conn, autocommit=True) as conn:
@@ -331,6 +332,131 @@ def test_idempotency_and_preservation(db_conn):
         row = conn.execute("SELECT default_enabled, enforcement_mode FROM public.feature_catalog WHERE key = 'messages';").fetchone()
         assert row[0] is False
         assert row[1] == 'enforce'
+
+def test_feature_owner_returns_p_user(db_conn):
+    with psycopg.connect(db_conn, autocommit=True) as conn:
+        conn.execute('SET ROLE service_role;')
+        test_uid = uuid.uuid4()
+        res = conn.execute("SELECT public.feature_owner(%s);", (test_uid,)).fetchone()[0]
+        assert res == test_uid
+
+def test_assert_feature_exact_sentences_and_pt403(db_conn):
+    with psycopg.connect(db_conn, autocommit=True) as conn:
+        conn.execute('SET ROLE service_role;')
+        w_user = uuid.uuid4()
+        conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name) VALUES ('{w_user}', 'W Sentences');")
+
+        expected_wholesaler_sentences = {
+            'chamak': 'Chamak has been locked for your account by Jewel India admin. Contact support to unlock it.',
+            'set_creation': 'Set Creation has been locked for your account by Jewel India admin. Contact support to unlock it.',
+            'publish_to_retailer': 'Publishing has been locked for your account by Jewel India admin. Contact support to unlock it.',
+            'custom_inquiries': 'Custom inquiries have been locked for your account by Jewel India admin. Contact support to unlock it.',
+            'orders': 'Orders have been locked for your account by Jewel India admin. Contact support to unlock it.',
+            'messages': 'Messaging has been locked for your account by Jewel India admin. Contact support to unlock it.',
+            'publish_to_wholesaler': 'This feature has been locked for your account by Jewel India admin. Contact support to unlock it.',
+        }
+
+        expected_retailer_sentences = {
+            'orders': 'This supplier is not accepting orders right now.',
+            'messages': 'Messaging is not available for this supplier right now.',
+            'chamak': 'This is not available for this supplier right now.',
+            'custom_inquiries': 'This is not available for this supplier right now.',
+        }
+
+        # Put catalog into enforce mode
+        conn.execute("UPDATE public.feature_catalog SET enforcement_mode = 'enforce';")
+
+        for key, expected_msg in expected_wholesaler_sentences.items():
+            # Disable feature
+            conn.execute(f"SELECT public.admin_set_feature('{w_user}', '{key}', false, 'Disable {key}', 'admin', 0);")
+
+            # 1. Wholesaler audience check
+            with pytest.raises(psycopg.Error) as exc_info:
+                conn.execute(f"SELECT public.assert_feature('{w_user}', '{key}', 'wholesaler');")
+            assert exc_info.value.sqlstate == 'PT403'
+            assert expected_msg in str(exc_info.value)
+            assert exc_info.value.diag.message_detail == key
+            assert exc_info.value.diag.message_hint == 'FEATURE_DISABLED'
+
+            # 2. Retailer audience check
+            ret_expected = expected_retailer_sentences.get(key, 'This is not available for this supplier right now.')
+            with pytest.raises(psycopg.Error) as exc_info_ret:
+                conn.execute(f"SELECT public.assert_feature('{w_user}', '{key}', 'retailer');")
+            assert exc_info_ret.value.sqlstate == 'PT403'
+            assert ret_expected in str(exc_info_ret.value)
+            assert exc_info_ret.value.diag.message_detail == key
+            assert exc_info_ret.value.diag.message_hint == 'FEATURE_DISABLED'
+
+            # Reset back to default
+            conn.execute(f"SELECT public.admin_reset_feature('{w_user}', '{key}', 'Reset {key}', 'admin', 1);")
+
+def test_my_features_exact_shape(db_conn):
+    with psycopg.connect(db_conn, autocommit=True) as conn:
+        conn.execute('SET ROLE service_role;')
+        w_user = uuid.uuid4()
+        conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name) VALUES ('{w_user}', 'W Shape');")
+
+        # Set orders to false, but mode is 'off'
+        conn.execute(f"SELECT public.admin_set_feature('{w_user}', 'orders', false, 'Orders off', 'admin', 0);")
+        conn.execute("UPDATE public.feature_catalog SET enforcement_mode = 'off' WHERE key = 'orders';")
+
+        conn.execute(f"""
+            SET ROLE authenticated;
+            SELECT set_config('request.jwt.claim.sub', '{w_user}', false);
+            SELECT set_config('request.jwt.claim.role', 'authenticated', false);
+        """)
+
+        # When mode is off, available is True and message is None
+        res = conn.execute("SELECT public.my_features();").fetchone()[0]
+        assert isinstance(res, dict)
+        assert len(res) == 7
+        assert res['orders'] == {'available': True, 'message': None}
+
+        # Put orders into 'enforce' mode
+        conn.execute('SET ROLE service_role;')
+        conn.execute("UPDATE public.feature_catalog SET enforcement_mode = 'enforce' WHERE key = 'orders';")
+
+        conn.execute(f"""
+            SET ROLE authenticated;
+            SELECT set_config('request.jwt.claim.sub', '{w_user}', false);
+            SELECT set_config('request.jwt.claim.role', 'authenticated', false);
+        """)
+        res2 = conn.execute("SELECT public.my_features();").fetchone()[0]
+        assert res2['orders']['available'] is False
+        assert res2['orders']['message'] == 'Orders have been locked for your account by Jewel India admin. Contact support to unlock it.'
+
+def test_admin_bulk_set_features_atomic(db_conn):
+    with psycopg.connect(db_conn, autocommit=True) as conn:
+        conn.execute('SET ROLE service_role;')
+        w_user = uuid.uuid4()
+        conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name) VALUES ('{w_user}', 'W Bulk');")
+
+        # 1. Valid bulk set of orders and messages
+        bulk_changes = [
+            {'feature_key': 'orders', 'enabled': False, 'expected_version': 0},
+            {'feature_key': 'messages', 'enabled': False, 'expected_version': 0}
+        ]
+        res = conn.execute("SELECT public.admin_bulk_set_features(%s, %s::jsonb, %s, %s);", (w_user, json.dumps(bulk_changes), 'Bulk reason', 'admin')).fetchone()[0]
+        assert res['ok'] is True
+        assert res['count'] == 2
+
+        # Verify both are false
+        assert conn.execute(f"SELECT public.feature_enabled('{w_user}', 'orders');").fetchone()[0] is False
+        assert conn.execute(f"SELECT public.feature_enabled('{w_user}', 'messages');").fetchone()[0] is False
+
+        # 2. Conflict in one item rolls back the entire batch atomically
+        conflict_changes = [
+            {'feature_key': 'orders', 'enabled': True, 'expected_version': 1},
+            {'feature_key': 'messages', 'enabled': True, 'expected_version': 99} # Conflict!
+        ]
+        res2 = conn.execute("SELECT public.admin_bulk_set_features(%s, %s::jsonb, %s, %s);", (w_user, json.dumps(conflict_changes), 'Bulk reason 2', 'admin')).fetchone()[0]
+        assert res2['ok'] is False
+        assert res2['error'] == 'VERSION_CONFLICT'
+        assert res2['feature_key'] == 'messages'
+
+        # Neither feature was updated; both remain false at version 1
+        assert conn.execute(f"SELECT public.feature_enabled('{w_user}', 'orders');").fetchone()[0] is False
+        assert conn.execute(f"SELECT public.feature_enabled('{w_user}', 'messages');").fetchone()[0] is False
 
 def test_rollback(db_conn):
     with psycopg.connect(db_conn, autocommit=True) as conn:

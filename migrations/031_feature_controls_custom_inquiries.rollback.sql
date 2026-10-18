@@ -390,3 +390,160 @@ GRANT EXECUTE ON FUNCTION public.manufacturing_offer_expire_and_advance TO servi
 
 REVOKE ALL ON FUNCTION public.manufacturing_offer_expire_and_advance(UUID, INTEGER) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.manufacturing_offer_expire_and_advance(UUID, INTEGER) TO service_role;
+
+CREATE OR REPLACE FUNCTION public.manufacturing_offer_decline(
+    p_offer_id UUID,
+    p_reason TEXT DEFAULT NULL,
+    p_offer_duration_seconds INTEGER DEFAULT 1800
+)
+RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path TO 'public', 'pg_temp'
+AS $$
+DECLARE
+    v_user_id UUID := auth.uid();
+    v_wholesaler_id UUID := public.my_verified_wholesaler_id();
+    v_offer public.manufacturing_offers%ROWTYPE;
+    v_request public.manufacturing_requests%ROWTYPE;
+    v_next_candidate RECORD;
+    v_new_offer_id UUID;
+    v_expires_at TIMESTAMPTZ;
+    v_event_id UUID;
+    v_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+    IF v_user_id IS NULL OR v_wholesaler_id IS NULL THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'UNAUTHORIZED', 'message', 'Only verified wholesalers can decline offers.');
+    END IF;
+
+    IF EXISTS(SELECT 1 FROM public.manufacturing_offers o JOIN public.manufacturing_requests r ON r.id=o.request_id WHERE o.id=p_offer_id AND r.broadcast_mode='parallel') THEN
+        RETURN public.manufacturing_broadcast_decline(p_offer_id,p_reason);
+    END IF;
+    -- Lock offer row
+    SELECT * INTO v_offer
+      FROM public.manufacturing_offers
+     WHERE id = p_offer_id
+       FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'OFFER_NOT_FOUND', 'message', 'Offer not found.');
+    END IF;
+
+    IF v_offer.wholesaler_id != v_wholesaler_id THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'FORBIDDEN', 'message', 'This offer is not addressed to you.');
+    END IF;
+
+    -- Lock request row
+    SELECT * INTO v_request
+      FROM public.manufacturing_requests
+     WHERE id = v_offer.request_id
+       FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'REQUEST_NOT_FOUND', 'message', 'Parent request not found.');
+    END IF;
+
+    IF v_offer.status = 'declined' THEN
+        RETURN jsonb_build_object('ok', true, 'status', 'declined', 'idempotent', true);
+    END IF;
+
+    IF v_offer.status != 'active' OR v_request.state != 'routing' THEN
+        RETURN jsonb_build_object('ok', false, 'error', 'INVALID_STATE', 'message', 'Offer is no longer active.');
+    END IF;
+
+    v_now := clock_timestamp();
+
+    -- Mark offer declined
+    UPDATE public.manufacturing_offers
+       SET status = 'declined',
+           decline_reason = btrim(p_reason),
+           responded_at = v_now,
+           version = version + 1,
+           updated_at = v_now
+     WHERE id = v_offer.id;
+
+    -- Record decline event
+    INSERT INTO public.manufacturing_events (
+        request_id, offer_id, actor_user_id, actor_role, event_type, from_state, to_state, metadata
+    ) VALUES (
+        v_request.id, v_offer.id, v_user_id, 'wholesaler', 'OFFER_DECLINED', 'active', 'declined',
+        jsonb_build_object('wholesaler_id', v_wholesaler_id, 'reason', p_reason)
+    );
+
+    -- Find next queued candidate who is still verified
+    SELECT c.wholesaler_id, c.rank, w.user_id
+      INTO v_next_candidate
+      FROM public.manufacturing_request_candidates c
+      JOIN public.wholesalers w ON w.id = c.wholesaler_id
+     WHERE c.request_id = v_request.id
+       AND c.rank > v_offer.rank
+       AND c.status = 'queued'
+       AND w.verification_status = 'verified'
+     ORDER BY c.rank ASC
+     LIMIT 1;
+
+    IF v_next_candidate.wholesaler_id IS NOT NULL THEN
+        -- Mark candidate offered
+        UPDATE public.manufacturing_request_candidates
+           SET status = 'offered', updated_at = v_now
+         WHERE request_id = v_request.id AND wholesaler_id = v_next_candidate.wholesaler_id;
+
+        -- Create next offer
+        v_expires_at := v_now + (COALESCE(p_offer_duration_seconds, 1800) || ' seconds')::interval;
+
+        INSERT INTO public.manufacturing_offers (
+            request_id, wholesaler_id, rank, status, offered_at, expires_at
+        ) VALUES (
+            v_request.id, v_next_candidate.wholesaler_id, v_next_candidate.rank, 'active', v_now, v_expires_at
+        ) RETURNING id INTO v_new_offer_id;
+
+        UPDATE public.manufacturing_requests
+           SET active_offer_id = v_new_offer_id, version = version + 1, updated_at = v_now
+         WHERE id = v_request.id;
+
+        INSERT INTO public.manufacturing_events (
+            request_id, offer_id, actor_user_id, actor_role, event_type, from_state, to_state, metadata
+        ) VALUES (
+            v_request.id, v_new_offer_id, v_user_id, 'system', 'OFFER_ADVANCED_AFTER_DECLINE', 'active', 'active',
+            jsonb_build_object('previous_offer_id', v_offer.id, 'new_offer_id', v_new_offer_id, 'new_wholesaler_id', v_next_candidate.wholesaler_id)
+        ) RETURNING id INTO v_event_id;
+
+        IF v_next_candidate.user_id IS NOT NULL THEN
+            INSERT INTO public.manufacturing_notification_outbox (
+                event_id, recipient_user_id, kind, payload, dedup_key
+            ) VALUES (
+                v_event_id, v_next_candidate.user_id, 'NEW_MANUFACTURING_OFFER',
+                jsonb_build_object('request_id', v_request.id, 'offer_id', v_new_offer_id, 'expires_at', v_expires_at),
+                'mfg_offer_' || v_new_offer_id::text
+            );
+        END IF;
+
+        RETURN jsonb_build_object('ok', true, 'status', 'declined', 'advanced', true, 'new_offer_id', v_new_offer_id);
+    ELSE
+        -- No further candidates -> Request exhausted
+        UPDATE public.manufacturing_requests
+           SET state = 'exhausted', active_offer_id = NULL, version = version + 1, updated_at = v_now
+         WHERE id = v_request.id;
+
+        INSERT INTO public.manufacturing_events (
+            request_id, actor_user_id, actor_role, event_type, from_state, to_state, metadata
+        ) VALUES (
+            v_request.id, v_user_id, 'system', 'REQUEST_EXHAUSTED', 'routing', 'exhausted',
+            jsonb_build_object('last_offer_id', v_offer.id, 'reason', 'All eligible candidates declined or expired')
+        ) RETURNING id INTO v_event_id;
+
+        -- Notify retailer
+        INSERT INTO public.manufacturing_notification_outbox (
+            event_id, recipient_user_id, kind, payload, dedup_key
+        ) VALUES (
+            v_event_id, v_request.created_by_user_id, 'MANUFACTURING_REQUEST_EXHAUSTED',
+            jsonb_build_object('request_id', v_request.id),
+            'mfg_exhausted_' || v_request.id::text
+        );
+
+        RETURN jsonb_build_object('ok', true, 'status', 'declined', 'advanced', true, 'state', 'exhausted');
+    END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.manufacturing_offer_decline FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.manufacturing_offer_decline TO authenticated;

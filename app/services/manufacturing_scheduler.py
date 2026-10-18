@@ -260,96 +260,99 @@ class ManufacturingScheduler:
                 ).execute().data or []
 
                 for item in claimed_batch:
-                    outbox_id = item["id"]
-                    recipient_user_id = item["recipient_user_id"]
+                    try:
+                        outbox_id = item["id"]
+                        recipient_user_id = item["recipient_user_id"]
 
-                    if is_feature_blocked(recipient_user_id, "custom_inquiries"):
-                        logger.info(f"Skipping push notification for disabled wholesaler {recipient_user_id}")
-                        sb.table("manufacturing_notification_outbox").update({
-                            "status": "dropped_feature_disabled",
-                            "last_error": "custom_inquiries feature is disabled for this user",
-                        }).eq("id", outbox_id).execute()
-                        continue
-                    kind = item["kind"]
-                    payload = item.get("payload") or {}
-                    attempts = item.get("attempts", 1)
+                        if is_feature_blocked(recipient_user_id, "custom_inquiries"):
+                            logger.info(f"Skipping push notification for disabled wholesaler {recipient_user_id}")
+                            sb.table("manufacturing_notification_outbox").update({
+                                "status": "abandoned",
+                                "last_error": "custom_inquiries feature disabled for recipient",
+                            }).eq("id", outbox_id).execute()
+                            continue
+                        kind = item["kind"]
+                        payload = item.get("payload") or {}
+                        attempts = item.get("attempts", 1)
 
-                    # Check APNs configuration
-                    if not apns_service.is_configured:
-                        logger.warning(
-                            "APNs is not configured; recording outbox as pending_config",
-                            extra={"outbox_id": outbox_id, "kind": kind}
-                        )
-                        sb.table("manufacturing_notification_outbox").update({
-                            "status": "pending_config",
-                            "last_error": "APNS_CONFIG_MISSING: APNS_KEY_ID, APNS_TEAM_ID, or APNS_PRIVATE_KEY is unconfigured.",
-                        }).eq("id", outbox_id).execute()
-                        continue
-
-                    # Look up active device tokens for the recipient user
-                    token_rows = (
-                        sb.table("manufacturing_device_tokens")
-                        .select("id, device_token, environment")
-                        .eq("user_id", recipient_user_id)
-                        .execute()
-                        .data or []
-                    )
-
-                    if not token_rows:
-                        # No tokens registered for this user — mark delivered with explanation
-                        logger.info(
-                            "No device tokens found for recipient; marked delivered",
-                            extra={"outbox_id": outbox_id, "recipient": recipient_user_id}
-                        )
-                        sb.table("manufacturing_notification_outbox").update({
-                            "status": "delivered",
-                            "delivered_at": datetime.now(timezone.utc).isoformat(),
-                            "last_error": "NO_DEVICE_TOKENS_REGISTERED",
-                        }).eq("id", outbox_id).execute()
-                        continue
-
-                    title, body = format_notification(kind, payload)
-                    any_delivered = False
-                    last_send_error = ""
-
-                    for d_tok in token_rows:
-                        device_token = d_tok["device_token"]
-                        env = d_tok.get("environment") or "production"
-
-                        ok, status_code, err_msg = apns_service.send_push(
-                            device_token=device_token,
-                            title=title,
-                            body=body,
-                            custom_payload=payload,
-                            environment=env,
-                        )
-
-                        if ok:
-                            any_delivered = True
-                        elif status_code == 410:
-                            # 410 Unregistered: token is dead, clean up immediately
-                            logger.info(
-                                "Cleaning up unregistered APNs device token (410)",
-                                extra={"token_id": d_tok["id"], "user_id": recipient_user_id}
+                        # Check APNs configuration
+                        if not apns_service.is_configured:
+                            logger.warning(
+                                "APNs is not configured; recording outbox as pending_config",
+                                extra={"outbox_id": outbox_id, "kind": kind}
                             )
-                            sb.table("manufacturing_device_tokens").delete().eq("id", d_tok["id"]).execute()
-                            last_send_error = "Device token unregistered (410)"
-                        else:
-                            last_send_error = f"APNs HTTP {status_code}: {err_msg}"
+                            sb.table("manufacturing_notification_outbox").update({
+                                "status": "pending_config",
+                                "last_error": "APNS_CONFIG_MISSING: APNS_KEY_ID, APNS_TEAM_ID, or APNS_PRIVATE_KEY is unconfigured.",
+                            }).eq("id", outbox_id).execute()
+                            continue
 
-                    if any_delivered:
-                        sb.table("manufacturing_notification_outbox").update({
-                            "status": "delivered",
-                            "delivered_at": datetime.now(timezone.utc).isoformat(),
-                            "last_error": None,
-                        }).eq("id", outbox_id).execute()
-                    else:
-                        # Not delivered to any token
-                        new_status = "failed" if attempts >= 5 else "pending"
-                        sb.table("manufacturing_notification_outbox").update({
-                            "status": new_status,
-                            "last_error": last_send_error[:500],
-                        }).eq("id", outbox_id).execute()
+                        # Look up active device tokens for the recipient user
+                        token_rows = (
+                            sb.table("manufacturing_device_tokens")
+                            .select("id, device_token, environment")
+                            .eq("user_id", recipient_user_id)
+                            .execute()
+                            .data or []
+                        )
+
+                        if not token_rows:
+                            # No tokens registered for this user — mark delivered with explanation
+                            logger.info(
+                                "No device tokens found for recipient; marked delivered",
+                                extra={"outbox_id": outbox_id, "recipient": recipient_user_id}
+                            )
+                            sb.table("manufacturing_notification_outbox").update({
+                                "status": "delivered",
+                                "delivered_at": datetime.now(timezone.utc).isoformat(),
+                                "last_error": "NO_DEVICE_TOKENS_REGISTERED",
+                            }).eq("id", outbox_id).execute()
+                            continue
+
+                        title, body = format_notification(kind, payload)
+                        any_delivered = False
+                        last_send_error = ""
+
+                        for d_tok in token_rows:
+                            device_token = d_tok["device_token"]
+                            env = d_tok.get("environment") or "production"
+
+                            ok, status_code, err_msg = apns_service.send_push(
+                                device_token=device_token,
+                                title=title,
+                                body=body,
+                                custom_payload=payload,
+                                environment=env,
+                            )
+
+                            if ok:
+                                any_delivered = True
+                            elif status_code == 410:
+                                # 410 Unregistered: token is dead, clean up immediately
+                                logger.info(
+                                    "Cleaning up unregistered APNs device token (410)",
+                                    extra={"token_id": d_tok["id"], "user_id": recipient_user_id}
+                                )
+                                sb.table("manufacturing_device_tokens").delete().eq("id", d_tok["id"]).execute()
+                                last_send_error = "Device token unregistered (410)"
+                            else:
+                                last_send_error = f"APNs HTTP {status_code}: {err_msg}"
+
+                        if any_delivered:
+                            sb.table("manufacturing_notification_outbox").update({
+                                "status": "delivered",
+                                "delivered_at": datetime.now(timezone.utc).isoformat(),
+                                "last_error": None,
+                            }).eq("id", outbox_id).execute()
+                        else:
+                            # Not delivered to any token
+                            new_status = "failed" if attempts >= 5 else "pending"
+                            sb.table("manufacturing_notification_outbox").update({
+                                "status": new_status,
+                                "last_error": last_send_error[:500],
+                            }).eq("id", outbox_id).execute()
+                    except Exception as item_exc:
+                        logger.error(f"Error processing outbox item {item.get('id')}: {item_exc}", exc_info=item_exc)
 
             except Exception as e:
                 logger.debug(f"Could not process outbox batch: {e}")

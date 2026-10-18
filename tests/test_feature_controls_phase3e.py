@@ -54,6 +54,12 @@ def db_conn(pg_server):
 
             CREATE SCHEMA IF NOT EXISTS auth;
             CREATE TABLE IF NOT EXISTS auth.users (id UUID PRIMARY KEY, email TEXT);
+            CREATE OR REPLACE FUNCTION auth.uid() RETURNS UUID LANGUAGE sql STABLE AS $$
+                SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid;
+            $$;
+            CREATE OR REPLACE FUNCTION auth.role() RETURNS TEXT LANGUAGE sql STABLE AS $$
+                SELECT COALESCE(NULLIF(current_setting('request.jwt.claim.role', true), ''), 'anon');
+            $$;
 
             CREATE TABLE IF NOT EXISTS public.wholesalers (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -89,6 +95,7 @@ def db_conn(pg_server):
                 employee_id UUID REFERENCES public.employees(id),
                 retailer_id UUID REFERENCES public.retailers(id),
                 wholesaler_id UUID NOT NULL REFERENCES auth.users(id),
+                manufacturing_request_id UUID NULL,
                 customization_note TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMPTZ DEFAULT now(),
@@ -182,6 +189,44 @@ def test_orders_trigger_enforcement(db_conn):
             """)
             tx_conn.commit()
         assert conn.execute(f"SELECT COUNT(*) FROM public.orders WHERE id = '{order5_id}';").fetchone()[0] == 1
+
+def test_manufacturing_orders_bypass_orders_feature_block(db_conn):
+    with psycopg.connect(db_conn, autocommit=True) as conn:
+        conn.execute("SET ROLE service_role;")
+
+        # Setup Wholesaler & Product
+        w_user = uuid.uuid4()
+        conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{w_user}', 'w_mfg_order@test.com');")
+        conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name) VALUES ('{w_user}', 'Wholesale Mfg');")
+
+        prod_id = uuid.uuid4()
+        conn.execute(f"INSERT INTO public.products (id, wholesaler_id, title) VALUES ('{prod_id}', '{w_user}', 'Custom Ring');")
+
+        # Disable 'orders' for wholesaler and set catalog to 'enforce'
+        conn.execute(f"SELECT public.admin_set_feature('{w_user}', 'orders', false, 'Lock orders', 'admin', 0);")
+        conn.execute("UPDATE public.feature_catalog SET enforcement_mode = 'enforce' WHERE key = 'orders';")
+
+        # Case 1: Standard retail order (manufacturing_request_id IS NULL) -> BLOCKED
+        standard_order_id = uuid.uuid4()
+        with pytest.raises(psycopg.Error) as exc_info:
+            conn.execute(f"""
+                INSERT INTO public.orders (id, product_id, wholesaler_id, status)
+                VALUES ('{standard_order_id}', '{prod_id}', '{w_user}', 'pending');
+            """)
+        assert exc_info.value.sqlstate == 'PT403'
+        assert "FEATURE_DISABLED" in str(exc_info.value)
+
+        # Case 2: Awarded manufacturing order (manufacturing_request_id IS NOT NULL) -> ALLOWED
+        mfg_req_id = uuid.uuid4()
+        mfg_order_id = uuid.uuid4()
+        conn.execute(f"""
+            INSERT INTO public.orders (id, product_id, wholesaler_id, status, manufacturing_request_id)
+            VALUES ('{mfg_order_id}', '{prod_id}', '{w_user}', 'pending', '{mfg_req_id}');
+        """)
+        row = conn.execute(f"SELECT status, manufacturing_request_id FROM public.orders WHERE id = '{mfg_order_id}';").fetchone()
+        assert row[0] == 'pending'
+        assert row[1] == mfg_req_id
+
 
 def test_orders_rollback(db_conn):
     with psycopg.connect(db_conn, autocommit=True) as conn:

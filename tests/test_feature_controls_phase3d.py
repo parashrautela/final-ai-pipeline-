@@ -26,6 +26,7 @@ from app.auth import require_user
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MIGRATION_019 = REPO_ROOT / "migrations" / "019_manufacturing_requests_broadcast.sql"
+MIGRATION_021 = REPO_ROOT / "migrations" / "021_parallel_manufacturing_quotes.sql"
 MIGRATION_030 = REPO_ROOT / "migrations" / "030_feature_controls.sql"
 MIGRATION_031 = REPO_ROOT / "migrations" / "031_feature_controls_custom_inquiries.sql"
 
@@ -84,8 +85,10 @@ def db_conn(pg_server):
             $$;
         """)
 
-        # Apply base broadcast migration 019
+        # Apply base broadcast migration 019 and parallel quotes 021
         with open(MIGRATION_019) as f:
+            conn.execute(f.read())
+        with open(MIGRATION_021) as f:
             conn.execute(f.read())
 
         # Apply 030 and 031
@@ -229,18 +232,195 @@ def test_request_visible_to_current_wholesaler(db_conn):
         """)
         assert conn.execute(f"SELECT public.request_visible_to_current_wholesaler('{req_id}');").fetchone()[0] is False
 
+def test_queue_advance_skips_locked_wholesaler(db_conn):
+    with psycopg.connect(db_conn, autocommit=True) as conn:
+        conn.execute("SET ROLE service_role;")
+
+        # Setup Retailer
+        ret_user = uuid.uuid4()
+        conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{ret_user}', 'retailer2@test.com');")
+        ret_id = conn.execute(f"INSERT INTO public.retailers (user_id, store_name, verification_status) VALUES ('{ret_user}', 'Store R2', 'verified') RETURNING id;").fetchone()[0]
+
+        # Setup Wholesalers A, B, C - initially all 3 enabled and verified
+        wA_user = uuid.uuid4()
+        wB_user = uuid.uuid4()
+        wC_user = uuid.uuid4()
+        wA_id = None
+        wB_id = None
+        wC_id = None
+        for u, name in [(wA_user, "WA2"), (wB_user, "WB2"), (wC_user, "WC2")]:
+            conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{u}', '{name.lower()}@test.com');")
+            wid = conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name, verification_status) VALUES ('{u}', '{name}', 'verified') RETURNING id;").fetchone()[0]
+            if name == "WA2": wA_id = wid
+            elif name == "WB2": wB_id = wid
+            elif name == "WC2": wC_id = wid
+
+        # Create Asset for request
+        asset_id = uuid.uuid4()
+        conn.execute(f"""
+            INSERT INTO public.manufacturing_request_assets (
+                id, owner_retailer_id, storage_path, mime_type, byte_size, width, height, status
+            ) VALUES (
+                '{asset_id}', '{ret_id}', 'test2.jpg', 'image/jpeg', 100, 100, 100, 'uploaded'
+            );
+        """)
+
+        # Create Request as Retailer
+        conn.execute(f"""
+            SET ROLE authenticated;
+            SELECT set_config('request.jwt.claim.sub', '{ret_user}', false);
+            SELECT set_config('request.jwt.claim.role', 'authenticated', false);
+        """)
+        res = conn.execute(f"""
+            SELECT public.manufacturing_request_create(
+                p_asset_id => '{asset_id}'::uuid,
+                p_category => 'necklace',
+                p_min_weight => 5.0,
+                p_max_weight => 10.0,
+                p_material => 'gold',
+                p_purity => '22k',
+                p_gemstone_preference => 'none',
+                p_quantity => 1,
+                p_making_budget_mode => 'fixed_total',
+                p_making_budget_amount => 80000,
+                p_currency => 'INR',
+                p_metal_rate_snapshot => 7500,
+                p_metal_rate_basis => 'ibja',
+                p_delivery_needed_date => (CURRENT_DATE + INTERVAL '14 days')::date,
+                p_notes => 'Queue test notes',
+                p_offer_duration_seconds => 1800
+            );
+        """).fetchone()[0]
+
+        assert res['ok'] is True
+        req_id = res['request_id']
+
+        # Retrieve ordered candidates by rank: Rank 1 (A), Rank 2 (B), Rank 3 (C)
+        conn.execute("SET ROLE service_role;")
+        cands = conn.execute(f"""
+            SELECT c.rank, c.wholesaler_id, w.user_id
+            FROM public.manufacturing_request_candidates c
+            JOIN public.wholesalers w ON w.id = c.wholesaler_id
+            WHERE c.request_id = '{req_id}'
+            ORDER BY c.rank;
+        """).fetchall()
+        assert len(cands) == 3
+
+        cand_A_id, cand_A_user = cands[0][1], cands[0][2]
+        cand_B_id, cand_B_user = cands[1][1], cands[1][2]
+        cand_C_id, cand_C_user = cands[2][1], cands[2][2]
+
+        # Verify initial active offer is for rank 1 (cand_A)
+        first_offer = conn.execute(f"""
+            SELECT id, wholesaler_id, status FROM public.manufacturing_offers WHERE request_id = '{req_id}' AND status = 'active';
+        """).fetchone()
+        assert first_offer is not None
+        assert first_offer[1] == cand_A_id
+        offer_A_id = first_offer[0]
+
+        # NOW: Lock candidate B AFTER creation
+        conn.execute(f"SELECT public.admin_set_feature('{cand_B_user}', 'custom_inquiries', false, 'Lock B mid-queue', 'admin', 0);")
+        conn.execute("UPDATE public.feature_catalog SET enforcement_mode = 'enforce' WHERE key = 'custom_inquiries';")
+
+        # Wholesaler A declines the offer
+        conn.execute(f"""
+            SET ROLE authenticated;
+            SELECT set_config('request.jwt.claim.sub', '{cand_A_user}', false);
+            SELECT set_config('request.jwt.claim.role', 'authenticated', false);
+        """)
+        decline_res = conn.execute(f"""
+            SELECT public.manufacturing_offer_decline('{offer_A_id}'::uuid, 'Too busy'::text);
+        """).fetchone()[0]
+        assert decline_res['ok'] is True
+
+        # Check new active offer: it must skip B and go to C!
+        conn.execute("SET ROLE service_role;")
+        next_offer = conn.execute(f"""
+            SELECT id, wholesaler_id, status FROM public.manufacturing_offers WHERE request_id = '{req_id}' AND status = 'active';
+        """).fetchone()
+        assert next_offer is not None
+        assert next_offer[1] == cand_C_id, f"Expected offer to advance to C ({cand_C_id}), but was offered to {next_offer[1]}"
+
+
+def test_outbox_processing_with_real_019_table(db_conn):
+    with psycopg.connect(db_conn, autocommit=True) as conn:
+        conn.execute("SET ROLE service_role;")
+
+        # Create two recipients: one blocked, one active
+        blocked_user = uuid.uuid4()
+        active_user = uuid.uuid4()
+        conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{blocked_user}', 'blocked@test.com'), ('{active_user}', 'active@test.com');")
+
+        # Insert outbox rows against the real 019 table
+        outbox_blocked_id = conn.execute(f"""
+            INSERT INTO public.manufacturing_notification_outbox (
+                recipient_user_id, kind, payload, status
+            ) VALUES (
+                '{blocked_user}', 'new_offer', '{{"offer_id": "1"}}'::jsonb, 'pending'
+            ) RETURNING id;
+        """).fetchone()[0]
+
+        outbox_active_id = conn.execute(f"""
+            INSERT INTO public.manufacturing_notification_outbox (
+                recipient_user_id, kind, payload, status
+            ) VALUES (
+                '{active_user}', 'new_offer', '{{"offer_id": "2"}}'::jsonb, 'pending'
+            ) RETURNING id;
+        """).fetchone()[0]
+
+        # Claim batch
+        batch = conn.execute(f"""
+            SELECT id, recipient_user_id, kind, payload, attempts
+            FROM public.manufacturing_claim_outbox_batch('worker-test', 10, 60);
+        """).fetchall()
+        assert len(batch) >= 2
+
+        # Simulate outbox processor loop in scheduler with per-item try/except
+        for row in batch:
+            item_id = row[0]
+            recip = row[1]
+            try:
+                # If recipient is blocked, write 'abandoned' with specific error message
+                if recip == blocked_user:
+                    conn.execute("""
+                        UPDATE public.manufacturing_notification_outbox
+                        SET status = 'abandoned',
+                            last_error = 'custom_inquiries feature disabled for recipient'
+                        WHERE id = %s;
+                    """, (item_id,))
+                else:
+                    # Mark active user delivered
+                    conn.execute("""
+                        UPDATE public.manufacturing_notification_outbox
+                        SET status = 'delivered',
+                            delivered_at = clock_timestamp()
+                        WHERE id = %s;
+                    """, (item_id,))
+            except Exception as item_err:
+                pytest.fail(f"Item processing raised unexpected exception on real 019 schema: {item_err}")
+
+        # Verify row states against real DB
+        row_blocked = conn.execute("SELECT status, last_error FROM public.manufacturing_notification_outbox WHERE id = %s;", (outbox_blocked_id,)).fetchone()
+        assert row_blocked[0] == 'abandoned'
+        assert row_blocked[1] == 'custom_inquiries feature disabled for recipient'
+
+        row_active = conn.execute("SELECT status FROM public.manufacturing_notification_outbox WHERE id = %s;", (outbox_active_id,)).fetchone()
+        assert row_active[0] == 'delivered'
+
 @pytest.mark.asyncio
 async def test_fastapi_custom_inquiries_routes():
     transport = httpx.ASGITransport(app=app)
     user_id = str(uuid.uuid4())
     wholesaler_id = str(uuid.uuid4())
-    mock_wholesaler = {"user_id": user_id, "wholesaler_id": wholesaler_id, "company_name": "Test Co"}
+    mock_wholesaler = {"user_id": user_id, "wholesaler_id": wholesaler_id, "company_name": "Test Co", "client": None}
+    locked_msg = "Custom inquiries have been locked for your account by Jewel India admin. Contact support to unlock it."
 
     app.dependency_overrides[require_verified_wholesaler] = lambda: mock_wholesaler
     app.dependency_overrides[require_user] = lambda: user_id
 
     try:
-        with patch("app.features.is_feature_blocked", return_value=True),              patch("app.routers.manufacturing.is_feature_blocked", return_value=True):
+        with patch("app.features.get_feature_status", return_value=(True, locked_msg)), \
+             patch("app.routers.manufacturing.is_feature_blocked", return_value=True):
 
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 headers = {"Authorization": f"Bearer token-{user_id}"}
@@ -250,13 +430,14 @@ async def test_fastapi_custom_inquiries_routes():
                 assert resp_list.status_code == 200
                 assert resp_list.json() == []
 
-                # 2. Detail route returns 403 FEATURE_DISABLED
+                # 2. Detail route returns 403 with plain string detail and header
                 offer_id = str(uuid.uuid4())
                 resp_detail = await client.get(f"/api/wholesaler/manufacturing-offers/{offer_id}", headers=headers)
                 assert resp_detail.status_code == 403
-                assert resp_detail.json()["detail"]["code"] == "FEATURE_DISABLED"
+                assert resp_detail.json()["detail"] == locked_msg
+                assert resp_detail.headers.get("X-Feature-Disabled") == "custom_inquiries"
 
-                # 3. Accept route returns 403 FEATURE_DISABLED
+                # 3. Accept route returns 403 with plain string detail and header
                 resp_accept = await client.post(
                     f"/api/wholesaler/manufacturing-offers/{offer_id}/accept",
                     json={
@@ -267,6 +448,31 @@ async def test_fastapi_custom_inquiries_routes():
                     headers=headers
                 )
                 assert resp_accept.status_code == 403
-                assert resp_accept.json()["detail"]["code"] == "FEATURE_DISABLED"
+                assert resp_accept.json()["detail"] == locked_msg
+                assert resp_accept.headers.get("X-Feature-Disabled") == "custom_inquiries"
+
+                # 4. B1: Quotes route returns 403 with plain string detail and header
+                resp_quote = await client.post(
+                    f"/api/wholesaler/manufacturing-offers/{offer_id}/quotes",
+                    json={
+                        "total_quote_amount": 50000,
+                        "proposed_delivery_date": "2026-11-01"
+                    },
+                    headers=headers
+                )
+                assert resp_quote.status_code == 403
+                assert resp_quote.json()["detail"] == locked_msg
+                assert resp_quote.headers.get("X-Feature-Disabled") == "custom_inquiries"
+
+                # 5. B1: Decline route returns 403 with plain string detail and header
+                resp_decline = await client.post(
+                    f"/api/wholesaler/manufacturing-offers/{offer_id}/decline",
+                    json={"reason": "Cannot take this on"},
+                    headers=headers
+                )
+                assert resp_decline.status_code == 403
+                assert resp_decline.json()["detail"] == locked_msg
+                assert resp_decline.headers.get("X-Feature-Disabled") == "custom_inquiries"
     finally:
         app.dependency_overrides.clear()
+

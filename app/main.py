@@ -965,7 +965,7 @@ async def set_creation_generate(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = Depends(require_user),
+    user_id: Optional[str] = Depends(require_feature("set_creation")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Stage two pieces of jewelry into one matched-set photograph.

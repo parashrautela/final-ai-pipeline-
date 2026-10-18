@@ -126,8 +126,11 @@ async def test_chamak_api_blocked_before_credits():
     transport = httpx.ASGITransport(app=app)
     user_id = str(uuid.uuid4())
     generation_id = str(uuid.uuid4())
+    locked_msg = "Chamak has been locked for your account by Jewel India admin. Contact support to unlock it."
 
-    with patch("app.features.is_feature_blocked", return_value=True),          patch("app.auth.resolve_user_id", return_value=user_id),          patch("app.main._charge_or_reject", new_callable=AsyncMock) as mock_charge:
+    with patch("app.features.get_feature_status", return_value=(True, locked_msg)), \
+         patch("app.auth.resolve_user_id", return_value=user_id), \
+         patch("app.main._charge_or_reject", new_callable=AsyncMock) as mock_charge:
 
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             headers = {"Authorization": f"Bearer token-{user_id}"}
@@ -137,11 +140,38 @@ async def test_chamak_api_blocked_before_credits():
                 headers=headers
             )
 
-            # Must reject with 403 FEATURE_DISABLED
+            # Must reject with 403 and plain string detail
             assert resp.status_code == 403
-            body = resp.json()
-            assert body["detail"]["code"] == "FEATURE_DISABLED"
-            assert body["detail"]["feature"] == "chamak"
+            assert resp.json()["detail"] == locked_msg
+            assert resp.headers.get("X-Feature-Disabled") == "chamak"
 
             # Crucial check: _charge_or_reject must NOT have been called!
             assert mock_charge.call_count == 0
+
+@pytest.mark.asyncio
+async def test_set_creation_api_blocked_before_credits():
+    transport = httpx.ASGITransport(app=app)
+    user_id = str(uuid.uuid4())
+    generation_id = str(uuid.uuid4())
+    locked_msg = "Set Creation has been locked for your account by Jewel India admin. Contact support to unlock it."
+
+    with patch("app.features.get_feature_status", return_value=(True, locked_msg)), \
+         patch("app.auth.resolve_user_id", return_value=user_id), \
+         patch("app.main._charge_or_reject", new_callable=AsyncMock) as mock_charge:
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer token-{user_id}"}
+            resp = await client.post(
+                "/api/set-creation/generate",
+                json={"generation_id": generation_id},
+                headers=headers
+            )
+
+            # Must reject with 403 and plain string detail
+            assert resp.status_code == 403
+            assert resp.json()["detail"] == locked_msg
+            assert resp.headers.get("X-Feature-Disabled") == "set_creation"
+
+            # Crucial check: _charge_or_reject must NOT have been called!
+            assert mock_charge.call_count == 0
+

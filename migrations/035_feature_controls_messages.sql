@@ -1,6 +1,7 @@
 -- Migration 035: Enforcement Triggers for Messages
 -- Triggers BEFORE INSERT ON public.conversations and public.messages
 -- Prevents creating new conversations or sending messages when 'messages' feature is blocked.
+-- Passes audience 'wholesaler' if caller is the wholesaler, else 'retailer'.
 
 CREATE OR REPLACE FUNCTION public.check_conversations_feature_controls()
 RETURNS trigger
@@ -10,6 +11,7 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_wholesaler_user uuid;
+  v_audience text;
 BEGIN
   SELECT COALESCE(w.user_id, NEW.wholesaler_id)
     INTO v_wholesaler_user
@@ -17,7 +19,15 @@ BEGIN
     LEFT JOIN public.wholesalers w ON w.id = src.id
    LIMIT 1;
 
-  PERFORM public.assert_feature(COALESCE(v_wholesaler_user, NEW.wholesaler_id), 'messages');
+  v_wholesaler_user := COALESCE(v_wholesaler_user, NEW.wholesaler_id);
+
+  IF auth.uid() IS NOT NULL AND public.feature_owner(auth.uid()) = v_wholesaler_user THEN
+    v_audience := 'wholesaler';
+  ELSE
+    v_audience := 'retailer';
+  END IF;
+
+  PERFORM public.assert_feature(v_wholesaler_user, 'messages', v_audience);
   RETURN NEW;
 END;
 $$;
@@ -41,6 +51,7 @@ AS $$
 DECLARE
   v_conv_wholesaler uuid;
   v_wholesaler_user uuid;
+  v_audience text;
 BEGIN
   SELECT c.wholesaler_id
     INTO v_conv_wholesaler
@@ -54,7 +65,15 @@ BEGIN
       LEFT JOIN public.wholesalers w ON w.id = src.id
      LIMIT 1;
 
-    PERFORM public.assert_feature(COALESCE(v_wholesaler_user, v_conv_wholesaler), 'messages');
+    v_wholesaler_user := COALESCE(v_wholesaler_user, v_conv_wholesaler);
+
+    IF auth.uid() IS NOT NULL AND public.feature_owner(auth.uid()) = v_wholesaler_user THEN
+      v_audience := 'wholesaler';
+    ELSE
+      v_audience := 'retailer';
+    END IF;
+
+    PERFORM public.assert_feature(v_wholesaler_user, 'messages', v_audience);
   END IF;
 
   RETURN NEW;

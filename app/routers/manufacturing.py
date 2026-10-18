@@ -787,8 +787,12 @@ class TotalQuotePayload(BaseModel):
 
 
 @router.post("/wholesaler/manufacturing-offers/{offer_id}/quotes")
-async def submit_manufacturing_quote(offer_id: uuid.UUID, payload: TotalQuotePayload | AcceptOfferPayload,
-                                    wholesaler: dict = Depends(require_verified_wholesaler)):
+async def submit_manufacturing_quote(
+    offer_id: uuid.UUID,
+    payload: TotalQuotePayload | AcceptOfferPayload,
+    wholesaler: dict = Depends(require_verified_wholesaler),
+    _feature_check: None = Depends(require_feature("custom_inquiries")),
+):
     """Submit one quote per invitation; never assigns the project. RPC retries are atomic."""
     if isinstance(payload, TotalQuotePayload):
         params = {"p_offer_id": str(offer_id), "p_making_charge_mode": "total_quote",
@@ -832,6 +836,7 @@ async def decline_manufacturing_offer(
     payload: DeclineOfferPayload = DeclineOfferPayload(),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     wholesaler: dict = Depends(require_verified_wholesaler),
+    _feature_check: None = Depends(require_feature("custom_inquiries")),
 ):
     """Wholesaler declines offer with optional reason. Immediately advances queue."""
     def _decline():

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from app.features import is_feature_blocked
+from app.features import get_feature_status, is_feature_blocked
 
 import base64
 import json
@@ -403,11 +403,12 @@ async def run_stage4_generation(
             return
 
         wholesaler_id = str(row.get("wholesaler_id") or "default_wholesaler")
-        if is_feature_blocked(row.get("wholesaler_id"), "chamak"):
+        is_blocked, locked_msg = get_feature_status(row.get("wholesaler_id"), "chamak")
+        if is_blocked:
             logger.warning(f"Chamak generation blocked for wholesaler {wholesaler_id}")
             await update_chamak_generation(generation_id, {
                 "status": "failed",
-                "error_message": "Feature chamak is disabled for this account.",
+                "error_message": locked_msg,
             })
             await _refund_failed_generation(generation_id, "Feature disabled for account", charge)
             return
@@ -512,11 +513,12 @@ async def run_stage4_generation_openai(
             return
 
         wholesaler_id = str(row.get("wholesaler_id") or "default_wholesaler")
-        if is_feature_blocked(row.get("wholesaler_id"), "chamak"):
+        is_blocked, locked_msg = get_feature_status(row.get("wholesaler_id"), "chamak")
+        if is_blocked:
             logger.warning(f"Chamak 2.0 generation blocked for wholesaler {wholesaler_id}")
             await update_chamak_generation(generation_id, {
                 "status": "failed",
-                "error_message": "Feature chamak is disabled for this account.",
+                "error_message": locked_msg,
             })
             await _refund_failed_generation(generation_id, "Feature disabled for account", charge)
             return
@@ -924,11 +926,12 @@ async def run_set_creation_generation(
             return
 
         wholesaler_id = str(row.get("wholesaler_id") or "default_wholesaler")
-        if is_feature_blocked(row.get("wholesaler_id"), "set_creation"):
+        is_blocked, locked_msg = get_feature_status(row.get("wholesaler_id"), "set_creation")
+        if is_blocked:
             logger.warning(f"Set creation blocked for wholesaler {wholesaler_id}")
             await update_chamak_generation(generation_id, {
                 "status": "failed",
-                "error_message": "Feature set_creation is disabled for this account.",
+                "error_message": locked_msg,
             })
             await _refund_failed_generation(generation_id, "Feature disabled for account", charge)
             return
