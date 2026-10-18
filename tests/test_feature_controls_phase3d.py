@@ -29,6 +29,8 @@ MIGRATION_019 = REPO_ROOT / "migrations" / "019_manufacturing_requests_broadcast
 MIGRATION_021 = REPO_ROOT / "migrations" / "021_parallel_manufacturing_quotes.sql"
 MIGRATION_030 = REPO_ROOT / "migrations" / "030_feature_controls.sql"
 MIGRATION_031 = REPO_ROOT / "migrations" / "031_feature_controls_custom_inquiries.sql"
+MIGRATION_036 = REPO_ROOT / "migrations" / "036_feature_controls_parallel_broadcast.sql"
+MIGRATION_036_ROLLBACK = REPO_ROOT / "migrations" / "036_feature_controls_parallel_broadcast.rollback.sql"
 
 import tempfile
 
@@ -186,6 +188,118 @@ def test_queue_routing_skips_disabled_wholesaler(db_conn):
         companies = [c[1] for c in cands]
         assert "WB" not in companies
         assert "WA" in companies and "WC" in companies
+
+def test_parallel_broadcast_feature_controls_and_rollback(db_conn):
+    with psycopg.connect(db_conn, autocommit=True) as conn:
+        # 1. Capture baseline definition of manufacturing_broadcast_create from 021 (as postgres/migration runner)
+        orig_def = conn.execute("SELECT pg_get_functiondef('public.manufacturing_broadcast_create'::regproc);").fetchone()[0]
+
+        # 2. Apply migration 036 as migration runner
+        with open(MIGRATION_036) as f:
+            conn.execute(f.read())
+
+        new_def = conn.execute("SELECT pg_get_functiondef('public.manufacturing_broadcast_create'::regproc);").fetchone()[0]
+        assert "AND NOT public.feature_blocked(w.user_id, 'custom_inquiries')" in new_def
+
+        conn.execute("SET ROLE service_role;")
+
+        # Setup Retailer
+        ret_user = uuid.uuid4()
+        conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{ret_user}', 'retailer_bcast@test.com');")
+        ret_id = conn.execute(f"INSERT INTO public.retailers (user_id, store_name, verification_status) VALUES ('{ret_user}', 'Store Bcast', 'verified') RETURNING id;").fetchone()[0]
+
+        # Setup 3 Wholesalers: WA, WB, WC
+        wA_user = uuid.uuid4()
+        wB_user = uuid.uuid4()
+        wC_user = uuid.uuid4()
+        conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{wA_user}', 'wa_bcast@test.com');")
+        wA_id = conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name, verification_status) VALUES ('{wA_user}', 'WA_Bcast', 'verified') RETURNING id;").fetchone()[0]
+        conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{wB_user}', 'wb_bcast@test.com');")
+        wB_id = conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name, verification_status) VALUES ('{wB_user}', 'WB_Bcast', 'verified') RETURNING id;").fetchone()[0]
+        conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{wC_user}', 'wc_bcast@test.com');")
+        wC_id = conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name, verification_status) VALUES ('{wC_user}', 'WC_Bcast', 'verified') RETURNING id;").fetchone()[0]
+
+        # Lock 1 wholesaler (wB) for custom_inquiries under enforce mode
+        conn.execute(f"SELECT public.admin_set_feature('{wB_user}', 'custom_inquiries', false, 'WB locked', 'admin', 0);")
+        conn.execute("SELECT public.admin_set_catalog('custom_inquiries', true, 'enforce', 'Enforcing custom_inquiries', 'admin');")
+
+        # Create Asset for request
+        asset_id = uuid.uuid4()
+        conn.execute(f"""
+            INSERT INTO public.manufacturing_request_assets (
+                id, owner_retailer_id, storage_path, mime_type, byte_size, width, height, status
+            ) VALUES (
+                '{asset_id}', '{ret_id}', 'bcast.jpg', 'image/jpeg', 100, 100, 100, 'uploaded'
+            );
+        """)
+
+        # Call manufacturing_broadcast_create as Retailer
+        conn.execute(f"""
+            SET ROLE authenticated;
+            SELECT set_config('request.jwt.claim.sub', '{ret_user}', false);
+            SELECT set_config('request.jwt.claim.role', 'authenticated', false);
+        """)
+        res = conn.execute(f"""
+            SELECT public.manufacturing_broadcast_create(
+                p_asset_id => '{asset_id}'::uuid,
+                p_category => 'necklace',
+                p_min_weight => 10.0,
+                p_max_weight => 20.0,
+                p_material => 'gold',
+                p_purity => '22k',
+                p_gemstone_preference => 'none',
+                p_quantity => 2,
+                p_making_budget_mode => 'fixed_total',
+                p_making_budget_amount => 80000,
+                p_currency => 'INR',
+                p_metal_rate_snapshot => 7500,
+                p_metal_rate_basis => 'ibja',
+                p_delivery_needed_date => (CURRENT_DATE + INTERVAL '20 days')::date,
+                p_notes => 'Broadcast test',
+                p_offer_duration_seconds => 86400
+            );
+        """).fetchone()[0]
+
+        assert res['ok'] is True
+        assert res['candidates_count'] == 2
+        req_id = res['request_id']
+
+        # Verify candidate rows: only WA and WC, no WB
+        conn.execute("SET ROLE service_role;")
+        cands = conn.execute(f"""
+            SELECT c.wholesaler_id, w.company_name
+            FROM public.manufacturing_request_candidates c
+            JOIN public.wholesalers w ON w.id = c.wholesaler_id
+            WHERE c.request_id = '{req_id}';
+        """).fetchall()
+        cand_ids = [c[0] for c in cands]
+        assert wB_id not in cand_ids
+        assert wA_id in cand_ids and wC_id in cand_ids
+        assert len(cand_ids) == 2
+
+        # Verify offers: no offer for WB
+        offers = conn.execute(f"SELECT wholesaler_id FROM public.manufacturing_offers WHERE request_id = '{req_id}';").fetchall()
+        offer_wholesalers = [o[0] for o in offers]
+        assert wB_id not in offer_wholesalers
+        assert len(offer_wholesalers) == 2
+
+        # Verify outbox: no outbox row for WB's user_id
+        outbox_rows = conn.execute(f"SELECT recipient_user_id FROM public.manufacturing_notification_outbox WHERE recipient_user_id = '{wB_user}';").fetchall()
+        assert len(outbox_rows) == 0
+
+        # Outbox rows exist for WA and WC
+        outbox_wa = conn.execute(f"SELECT recipient_user_id FROM public.manufacturing_notification_outbox WHERE recipient_user_id = '{wA_user}';").fetchall()
+        assert len(outbox_wa) == 1
+        outbox_wc = conn.execute(f"SELECT recipient_user_id FROM public.manufacturing_notification_outbox WHERE recipient_user_id = '{wC_user}';").fetchall()
+        assert len(outbox_wc) == 1
+
+        # 3. Test rollback restores exact previous body
+        conn.execute("RESET ROLE;")
+        with open(MIGRATION_036_ROLLBACK) as f:
+            conn.execute(f.read())
+
+        rollback_def = conn.execute("SELECT pg_get_functiondef('public.manufacturing_broadcast_create'::regproc);").fetchone()[0]
+        assert rollback_def == orig_def
 
 def test_request_visible_to_current_wholesaler(db_conn):
     with psycopg.connect(db_conn, autocommit=True) as conn:

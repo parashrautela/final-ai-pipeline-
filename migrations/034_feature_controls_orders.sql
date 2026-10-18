@@ -14,7 +14,7 @@ DECLARE
   v_audience text;
 BEGIN
   -- Awarded manufacturing orders are governed by custom_inquiries, not orders
-  IF NEW.manufacturing_request_id IS NOT NULL THEN
+  IF (to_jsonb(NEW) ->> 'manufacturing_request_id') IS NOT NULL THEN
     RETURN NEW;
   END IF;
 

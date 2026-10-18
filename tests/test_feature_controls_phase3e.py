@@ -254,3 +254,103 @@ def test_orders_rollback(db_conn):
             VALUES ('{order_id}', '{prod_id}', '{w_user}', 'pending');
         """)
         assert conn.execute(f"SELECT COUNT(*) FROM public.orders WHERE id = '{order_id}';").fetchone()[0] == 1
+
+def test_orders_trigger_without_manufacturing_request_id_column(pg_server):
+    admin_uri = pg_server.get_uri()
+    db_name = f"test_fc3e_nocol_{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(admin_uri, autocommit=True) as conn:
+        conn.execute(f"CREATE DATABASE {db_name}")
+
+    db_uri = psycopg.conninfo.make_conninfo(admin_uri, dbname=db_name)
+
+    try:
+        with psycopg.connect(db_uri, autocommit=True) as conn:
+            conn.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon NOLOGIN; END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated NOLOGIN; END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='service_role') THEN CREATE ROLE service_role NOLOGIN BYPASSRLS; END IF;
+                END $$;
+
+                CREATE SCHEMA IF NOT EXISTS auth;
+                CREATE TABLE IF NOT EXISTS auth.users (id UUID PRIMARY KEY, email TEXT);
+                CREATE OR REPLACE FUNCTION auth.uid() RETURNS UUID LANGUAGE sql STABLE AS $$
+                    SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid;
+                $$;
+                CREATE OR REPLACE FUNCTION auth.role() RETURNS TEXT LANGUAGE sql STABLE AS $$
+                    SELECT COALESCE(NULLIF(current_setting('request.jwt.claim.role', true), ''), 'anon');
+                $$;
+
+                CREATE TABLE IF NOT EXISTS public.wholesalers (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID UNIQUE NOT NULL,
+                    company_name TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS public.products (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    wholesaler_id UUID NOT NULL,
+                    title TEXT NOT NULL
+                );
+
+                -- Notice: NO manufacturing_request_id column here!
+                CREATE TABLE IF NOT EXISTS public.orders (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    product_id UUID NOT NULL REFERENCES public.products(id),
+                    wholesaler_id UUID NOT NULL REFERENCES auth.users(id),
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ DEFAULT now()
+                );
+
+                GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
+                GRANT ALL ON ALL TABLES IN SCHEMA auth TO anon, authenticated, service_role;
+                GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+                GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
+            """)
+
+            # Apply 030 and 034
+            with open(MIGRATION_030) as f:
+                conn.execute(f.read())
+            with open(MIGRATION_034) as f:
+                conn.execute(f.read())
+
+            conn.execute("SET ROLE service_role;")
+            w_user = uuid.uuid4()
+            conn.execute(f"INSERT INTO auth.users (id, email) VALUES ('{w_user}', 'w_nocol@test.com');")
+            conn.execute(f"INSERT INTO public.wholesalers (user_id, company_name) VALUES ('{w_user}', 'Wholesale NoCol');")
+            prod_id = uuid.uuid4()
+            conn.execute(f"INSERT INTO public.products (id, wholesaler_id, title) VALUES ('{prod_id}', '{w_user}', 'Diamond Ring');")
+
+            # Disable orders for this wholesaler
+            conn.execute(f"SELECT public.admin_set_feature('{w_user}', 'orders', false, 'Lock orders', 'admin', 0);")
+
+            # Mode 1: 'off' -> Order insertion succeeds even though feature is disabled
+            conn.execute("SELECT public.admin_set_catalog('orders', true, 'off', 'Mode off', 'admin');")
+            o1_id = uuid.uuid4()
+            conn.execute(f"INSERT INTO public.orders (id, product_id, wholesaler_id) VALUES ('{o1_id}', '{prod_id}', '{w_user}');")
+            assert conn.execute(f"SELECT COUNT(*) FROM public.orders WHERE id = '{o1_id}';").fetchone()[0] == 1
+
+            # Mode 2: 'log' -> Order insertion succeeds even though feature is disabled
+            conn.execute("SELECT public.admin_set_catalog('orders', true, 'log', 'Mode log', 'admin');")
+            o2_id = uuid.uuid4()
+            conn.execute(f"INSERT INTO public.orders (id, product_id, wholesaler_id) VALUES ('{o2_id}', '{prod_id}', '{w_user}');")
+            assert conn.execute(f"SELECT COUNT(*) FROM public.orders WHERE id = '{o2_id}';").fetchone()[0] == 1
+
+            # Mode 3: 'enforce' -> When enabled, insertion succeeds
+            conn.execute("SELECT public.admin_set_catalog('orders', true, 'enforce', 'Mode enforce', 'admin');")
+            conn.execute(f"SELECT public.admin_set_feature('{w_user}', 'orders', true, 'Enable orders', 'admin', 1);")
+            o3_id = uuid.uuid4()
+            conn.execute(f"INSERT INTO public.orders (id, product_id, wholesaler_id) VALUES ('{o3_id}', '{prod_id}', '{w_user}');")
+            assert conn.execute(f"SELECT COUNT(*) FROM public.orders WHERE id = '{o3_id}';").fetchone()[0] == 1
+
+            # Mode 3: 'enforce' -> When disabled, insertion is blocked with PT403
+            conn.execute(f"SELECT public.admin_set_feature('{w_user}', 'orders', false, 'Re-lock orders', 'admin', 2);")
+            o4_id = uuid.uuid4()
+            with pytest.raises(psycopg.Error) as exc_info:
+                conn.execute(f"INSERT INTO public.orders (id, product_id, wholesaler_id) VALUES ('{o4_id}', '{prod_id}', '{w_user}');")
+            assert exc_info.value.sqlstate == 'PT403'
+            assert "FEATURE_DISABLED" in str(exc_info.value)
+    finally:
+        with psycopg.connect(admin_uri, autocommit=True) as conn:
+            conn.execute(f"DROP DATABASE IF EXISTS {db_name}")
+
