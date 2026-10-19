@@ -661,8 +661,21 @@ async def process_image(
     image_id: str,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(default=None),
+    image_count: Optional[int] = Form(None),
 ):
     """Trigger AI processing for an existing product."""
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid JSON body.")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Expected a JSON object.")
+        image_count = payload.get("image_count")
+    if image_count is not None and (
+        isinstance(image_count, bool) or not isinstance(image_count, int) or not 1 <= image_count <= 4
+    ):
+        raise HTTPException(status_code=422, detail="Choose between 1 and 4 images.")
     # --- Validate image_id is a proper UUID (prevents path traversal) ---
     try:
         image_id = validate_product_id(image_id)
@@ -706,11 +719,12 @@ async def process_image(
             status_code=422, detail=f"Product '{image_id}' has no image"
         )
 
-    background_tasks.add_task(_run_product_pipeline, product)
+    background_tasks.add_task(_run_product_pipeline, product, image_count)
     logger.info("Processing queued", extra={"product_id": image_id})
 
     return {
         "message": "Processing queued.",
+        "image_count": image_count,
         "product_id": image_id,
         "title": product.get("title"),
         "raw_image_url": product.get("image_url"),
