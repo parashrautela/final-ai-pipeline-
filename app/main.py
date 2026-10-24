@@ -1,3 +1,4 @@
+from app.features import require_feature
 import asyncio
 import hashlib
 import uuid
@@ -660,8 +661,21 @@ async def process_image(
     image_id: str,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(default=None),
+    image_count: Optional[int] = Form(None),
 ):
     """Trigger AI processing for an existing product."""
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid JSON body.")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Expected a JSON object.")
+        image_count = payload.get("image_count")
+    if image_count is not None and (
+        isinstance(image_count, bool) or not isinstance(image_count, int) or not 1 <= image_count <= 4
+    ):
+        raise HTTPException(status_code=422, detail="Choose between 1 and 4 images.")
     # --- Validate image_id is a proper UUID (prevents path traversal) ---
     try:
         image_id = validate_product_id(image_id)
@@ -705,11 +719,12 @@ async def process_image(
             status_code=422, detail=f"Product '{image_id}' has no image"
         )
 
-    background_tasks.add_task(_run_product_pipeline, product)
+    background_tasks.add_task(_run_product_pipeline, product, image_count)
     logger.info("Processing queued", extra={"product_id": image_id})
 
     return {
         "message": "Processing queued.",
+        "image_count": image_count,
         "product_id": image_id,
         "title": product.get("title"),
         "raw_image_url": product.get("image_url"),
@@ -782,7 +797,7 @@ async def chamak_analyze(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = Depends(require_user),
+    user_id: Optional[str] = Depends(require_feature("chamak")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Trigger Stage 1 vision analysis for a Chamak jewelry fusion job.
@@ -834,7 +849,7 @@ async def chamak_generate(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = Depends(require_user),
+    user_id: Optional[str] = Depends(require_feature("chamak")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Trigger Stage 3 prompt compilation & Stage 4 image generation.
@@ -897,7 +912,7 @@ async def chamak_generate_v2(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = Depends(require_user),
+    user_id: Optional[str] = Depends(require_feature("chamak")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Chamak 2.0 — the same fusion, rendered by OpenAI instead of Nanobana.
@@ -964,7 +979,7 @@ async def set_creation_generate(
     request: Request,
     body: ChamakGenerationRequest,
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = Depends(require_user),
+    user_id: Optional[str] = Depends(require_feature("set_creation")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Stage two pieces of jewelry into one matched-set photograph.
