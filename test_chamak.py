@@ -51,7 +51,7 @@ class TestChamakPipeline(unittest.TestCase):
 
         self.assertIn("necklace", prompt)
         self.assertIn("intricate filigree craftsmanship", prompt)
-        self.assertIn("filigree: make Design 2 (the corresponding feature in Design 2) the clear base", prompt)
+        self.assertIn("80% Design 2", prompt)
         self.assertIn("emerald centerpiece", prompt)
         self.assertIn("filigree", prompt)
         self.assertIn("Make the filigree extra delicate", prompt)

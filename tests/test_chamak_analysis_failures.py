@@ -36,43 +36,22 @@ class AnalysisFailures(unittest.IsolatedAsyncioTestCase):
 
 
 class BlendContract(unittest.TestCase):
-    def test_slider_snaps_to_five_distinct_steps(self):
+    def test_slider_direction_and_precise_percentages(self):
         analysis = {'image1_strengths':['floral dome'], 'image2_weaknesses':['flat disc'], 'image2_strengths':['ruby setting']}
-        steps = {
-            0: 'use Design 1 (floral dome) exactly',
-            .1: 'use Design 1 (floral dome) exactly',
-            .2: 'keep Design 1 (floral dome) as the clear base; add only a subtle accent from Design 2 (flat disc)',
-            .39: 'an even, visible blend of Design 1 (floral dome) and Design 2 (flat disc)',
-            .6: 'an even, visible blend of Design 1 (floral dome) and Design 2 (flat disc)',
-            .75: 'make Design 2 (flat disc) the clear base; keep only a subtle trace of Design 1 (floral dome)',
-            .9: 'use Design 2 (flat disc) completely',
-            1: 'use Design 2 (flat disc) completely',
-        }
-        for weight, expected in steps.items():
+        for weight in [0, .39, .6, 1]:
             prompt = compile_chamak_prompt(analysis, {'slider_weights': {'attr_0':weight}}, None)
-            self.assertIn(expected, prompt)
-            self.assertNotIn('% Design', prompt)
+            self.assertIn(f'{(1-weight)*100:g}% Design 1 (floral dome)', prompt)
+            self.assertIn(f'{weight*100:g}% Design 2 (flat disc)', prompt)
             self.assertNotIn('Prominently retain', prompt)
-
-    def test_steps_are_symmetric(self):
-        low = compile_chamak_prompt({}, {'slider_weights': {'x': .2}}, None)
-        high = compile_chamak_prompt({}, {'slider_weights': {'x': .8}}, None)
-        self.assertIn('subtle accent from Design 2', low)
-        self.assertIn('subtle trace of Design 1', high)
-
-    def test_strongest_sliders_lead(self):
-        prompt = compile_chamak_prompt({}, {'slider_weights': {'shape': .5, 'stone': 1, 'chain': .2}}, None)
-        self.assertLess(prompt.index('stone:'), prompt.index('chain:'))
-        self.assertLess(prompt.index('chain:'), prompt.index('shape:'))
 
     def test_old_web_and_normalized_payloads_are_equivalent(self):
         old = compile_chamak_prompt({}, {'Silhouette': 75}, None)
         new = compile_chamak_prompt({}, {'slider_weights': {'Silhouette': .75}}, None)
         self.assertEqual(old, new)
-        self.assertIn('Silhouette: make Design 2', new)
+        self.assertIn('75% Design 2', new)
 
     def test_context_and_invalid_weights(self):
         prompt = compile_chamak_prompt({}, {'slider_weights': {'motif': .92, 'bad': float('nan')}, 'attribute_context':[{'id':'motif','attribute':'Motif','image1_feature':'floral','image2_feature':'geometric'}]}, 'Keep gold')
-        self.assertIn('Motif: use Design 2 (geometric) completely', prompt)
+        self.assertIn('92% Design 2 (geometric)', prompt)
         self.assertNotIn('nan%', prompt)
         self.assertIn('Keep gold', prompt)
