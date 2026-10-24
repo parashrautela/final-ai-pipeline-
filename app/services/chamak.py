@@ -250,6 +250,37 @@ async def run_stage1_vision_analysis(
         await _refund_failed_generation(generation_id, "Analysis failed", charge)
 
 
+# Image models read "62% Design 1; 38% Design 2" as a vague "mix", so every
+# value between the extremes rendered alike. Each slider value is snapped to
+# one of five steps phrased as a distinct visual instruction instead. The
+# steps are mirror images of each other so neither design is favoured.
+def _slider_directive(weight: float, feature: str, first: str, second: str) -> str:
+    if weight <= 0.1:
+        return (
+            f"{feature}: use Design 1 ({first}) exactly. "
+            f"Take nothing from Design 2 ({second}) for this attribute."
+        )
+    if weight < 0.35:
+        return (
+            f"{feature}: keep Design 1 ({first}) as the clear base; "
+            f"add only a subtle accent from Design 2 ({second})."
+        )
+    if weight <= 0.65:
+        return (
+            f"{feature}: an even, visible blend of Design 1 ({first}) and Design 2 ({second}); "
+            "both must be clearly recognisable."
+        )
+    if weight < 0.9:
+        return (
+            f"{feature}: make Design 2 ({second}) the clear base; "
+            f"keep only a subtle trace of Design 1 ({first})."
+        )
+    return (
+        f"{feature}: use Design 2 ({second}) completely. "
+        f"Take nothing from Design 1 ({first}) for this attribute."
+    )
+
+
 def compile_chamak_prompt(
     analysis: Optional[dict[str, Any]],
     form_input: Optional[dict[str, Any]],
@@ -280,6 +311,7 @@ def compile_chamak_prompt(
         f"Design 1 observed features: {', '.join(img1_strengths)}.",
         f"Design 2 observed features: {', '.join(img2_strengths)}.",
     ]
+    slider_directives: list[tuple[float, str]] = []
     if isinstance(raw_weights, dict):
         for key, value in raw_weights.items():
             try:
@@ -299,11 +331,11 @@ def compile_chamak_prompt(
                     feature = context.get("attribute") or first
                 if index < len(img2_weaknesses):
                     second = img2_weaknesses[index]
-            fusion_directives.append(
-                f"{feature}: {(1-weight)*100:g}% Design 1 ({first}); "
-                f"{weight*100:g}% Design 2 ({second}). "
-                "A 0% contribution must not influence this attribute."
-            )
+            slider_directives.append((weight, _slider_directive(weight, feature, first, second)))
+    # Sliders pushed furthest from the middle lead, so the deliberate choices
+    # aren't buried behind the ones left at a blend.
+    slider_directives.sort(key=lambda item: abs(item[0] - 0.5), reverse=True)
+    fusion_directives.extend(directive for _, directive in slider_directives)
 
     # Artisan custom note
     if note and note.strip():
