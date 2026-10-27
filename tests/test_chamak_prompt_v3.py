@@ -18,6 +18,7 @@ from app.services.chamak_prompt_v3 import (
     STYLE_CHIPS,
     compile_chamak_prompt_v3,
     normalize_jewellery_type,
+    parse_wildness,
     resolve_template,
 )
 
@@ -104,7 +105,7 @@ class RailwayTemplate(unittest.TestCase):
     def test_a_valid_template_is_used_and_labelled(self):
         raw = "MY PROMPT for {{TYPE_1}}\n{{TYPE_MODULE}}\n{{BLEND_DIRECTIONS}}\n{{STYLE_CHOICES}}\n{{WHOLESALER_NOTE}}\nEND"
         template, label = resolve_template(raw)
-        self.assertEqual(template, raw)
+        self.assertEqual(template.replace("{{WILDNESS}}\n\n", ""), raw)
         self.assertRegex(label, r"^railway-[0-9a-f]{8}$")
         prompt = compile_chamak_prompt_v3({"image1_type": "ring"}, {}, "Thin band", [], template)
         self.assertTrue(prompt.startswith("MY PROMPT for a ring\nRING — COMPLETENESS"))
@@ -123,6 +124,34 @@ class RailwayTemplate(unittest.TestCase):
     def test_note_text_is_never_treated_as_a_token(self):
         prompt = build({"image1_type": "ring"}, {}, "keep {{TYPE_1}} literally")
         self.assertIn("keep {{TYPE_1}} literally", prompt)
+
+
+class Wildness(unittest.TestCase):
+    def test_unset_wildness_changes_nothing(self):
+        self.assertEqual(build({"image1_type": "ring"}), compile_chamak_prompt_v3({"image1_type": "ring"}, {}, None, [], DEFAULT_TEMPLATE, None))
+        self.assertNotIn("CREATIVE FREEDOM", build({"image1_type": "ring"}))
+
+    def test_each_band_gives_a_distinct_instruction_and_keeps_the_fixed_rules(self):
+        names = {0: "FAITHFUL", 1: "FAITHFUL", 2: "REFINED BLEND", 5: "REINTERPRET", 8: "BOLD NEW DESIGN", 10: "WILD"}
+        for level, name in names.items():
+            prompt = compile_chamak_prompt_v3({"image1_type": "ring"}, {}, None, [], DEFAULT_TEMPLATE, level)
+            self.assertIn(f"CREATIVE FREEDOM — LEVEL {level} OF 10 ({name})", prompt)
+            self.assertIn("At every level these stay fixed: the new piece is a ring", prompt)
+            self.assertLess(prompt.index("CREATIVE FREEDOM"), prompt.index("DESIGN RESTRAINT"))
+
+    def test_values_are_parsed_and_clamped(self):
+        for raw, expected in (("7", 7), (" 3 ", 3), (6.6, 7), ("15", 10), ("-2", 0), (4, 4)):
+            self.assertEqual(parse_wildness(raw), expected, raw)
+        for raw in ("", None, "wild", True, float("nan")):
+            self.assertIsNone(parse_wildness(raw), raw)
+
+    def test_a_railway_template_without_a_wildness_slot_gets_one(self):
+        raw = "A\n{{TYPE_MODULE}}\n{{BLEND_DIRECTIONS}}\n{{STYLE_CHOICES}}\n{{WHOLESALER_NOTE}}"
+        template, label = resolve_template(raw)
+        self.assertIn("{{WILDNESS}}\n\n{{BLEND_DIRECTIONS}}", template)
+        self.assertEqual(label, resolve_template(raw)[1])
+        prompt = compile_chamak_prompt_v3({"image1_type": "ring"}, {}, None, [], template, 9)
+        self.assertIn("(WILD)", prompt)
 
 
 class RailwayOutputSettings(unittest.TestCase):
@@ -154,6 +183,7 @@ class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
         with patch.object(settings, "CHAMAK_OUTPUT_COUNT", "3"), \
              patch.object(settings, "CHAMAK_OUTPUT_RESOLUTION", "1K"), \
              patch.object(settings, "CHAMAK_BASE_PROMPT_TEMPLATE", template), \
+             patch.object(settings, "CHAMAK_WILDNESS", "7"), \
              patch("app.services.chamak.get_feature_status", return_value=(False, None)), \
              patch("app.services.chamak.fetch_chamak_generation", AsyncMock(return_value=row)), \
              patch("app.services.chamak.fetch_image_bytes_and_content_type", AsyncMock(return_value=(b"i", "image/jpeg"))), \
@@ -165,12 +195,13 @@ class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fuse.await_count, 3)
         self.assertEqual({c.kwargs["size"] for c in fuse.await_args_list}, {"1024x1024"})
         self.assertTrue(fuse.await_args.kwargs["prompt"].startswith("T RING — COMPLETENESS"))
+        self.assertIn("LEVEL 7 OF 10 (BOLD NEW DESIGN)", fuse.await_args.kwargs["prompt"])
         history = [c.args[1]["output_history"] for c in update.await_args_list if "output_history" in c.args[1]][-1]
         self.assertEqual([a["attempt"] for a in history], [1, 2])
         final = update.await_args.args[1]
         self.assertEqual(final["status"], "done")
         self.assertEqual(final["output_image_url"], "w1/job/1.png")
-        self.assertRegex(final["prompt_version"], r"^v3\.0-chamak-openai\+railway-[0-9a-f]{8}$")
+        self.assertRegex(final["prompt_version"], r"^v3\.0-chamak-openai\+w7\+railway-[0-9a-f]{8}$")
         refund.assert_not_awaited()
 
     async def test_all_renders_failing_still_fails_and_refunds(self):

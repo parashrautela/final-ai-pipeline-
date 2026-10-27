@@ -256,6 +256,68 @@ STYLE_CHIPS: dict[str, tuple[str, str]] = {
 # prompt past the vendor limit and truncate the rules that follow it.
 _MAX_NOTE_CHARS = 1500
 
+# CHAMAK_WILDNESS, 0–10: how far the design may move away from the two
+# references. Five bands, each a distinct instruction — image models read a
+# bare number like "6/10" as vague, so the number only picks the band. Each
+# band names the rules it loosens; the fixed rules below hold at every level.
+_WILDNESS_BANDS = (
+    (1, "FAITHFUL",
+     "Stay as close to the references as possible. The new piece is clearly Design 1, with Design 2's "
+     "chosen elements placed into it, and nothing else. Invent nothing: every motif, stone, shape and "
+     "detail comes from one of the two designs. Keep Design 1's silhouette and layout exactly."),
+    (3, "REFINED BLEND",
+     "Combine the two designs and refine the result into one coherent piece. Keep Design 1's silhouette "
+     "and overall layout. You may add small connecting details (borders, joins, transitions) so the parts "
+     "from both designs flow together, but no new motifs or stones that appear in neither design."),
+    (6, "REINTERPRET",
+     "Use the two designs as strong inspiration rather than parts to assemble. Keep a clear family "
+     "resemblance to Design 1, but reinterpret: redraw the motifs in a fresh way, rearrange the "
+     "composition and refine the silhouette. You may introduce ONE new motif or design idea that appears "
+     "in neither reference, as long as it suits their style. This replaces the rule against adding "
+     "motifs that appear in neither design."),
+    (8, "BOLD NEW DESIGN",
+     "Create a bold, original design that a buyer has not seen before. The references set the mood, the "
+     "craft style, the materials and the colour palette; the composition, silhouette and motif treatment "
+     "are yours. Design 1 is recognisable only as the starting point and Design 2 only as an influence. "
+     "You may introduce up to TWO new motifs or design ideas that appear in neither reference. This "
+     "replaces the rule against adding motifs that appear in neither design, and loosens \"keep Design 1's "
+     "identity\" to \"keep Design 1's type, scale and wearability\". Treat the blend directions as a guide "
+     "to which design's character leads, not as exact proportions."),
+    (10, "WILD",
+     "Design something genuinely new and unexpected: a fresh, original piece that would stand out in any "
+     "catalogue. Treat both references only as a loose mood board for craft style, materials and colour. "
+     "Invent the silhouette, structure, composition and motifs freely; surprising forms, inventive "
+     "construction and unusual but tasteful ideas are welcome. Nothing has to be copied from either "
+     "design. This replaces the rule against adding new motifs and the rule to keep Design 1's identity: "
+     "keep only Design 1's type, scale and wearability. The blend directions are only a hint of which "
+     "design's mood leads."),
+)
+
+_WILDNESS_FIXED = (
+    "At every level these stay fixed: the new piece is {{TYPE_1}}, complete and wearable; only jewellery "
+    "appears, with no person, mannequin or text; the element limits, construction, surface-quality and "
+    "metal-colour rules apply in full, so a wilder design is still clean and uncluttered; the background, "
+    "lighting and camera do not change. The wholesaler's note still comes first."
+)
+
+
+def parse_wildness(raw: Any) -> Optional[int]:
+    """0–10 from a dashboard or request value; None when blank or not a number."""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        return None
+    if value != value:  # NaN
+        return None
+    return max(0, min(10, round(value)))
+
+
+def _wildness_block(level: int) -> str:
+    name, text = next((n, t) for top, n, t in _WILDNESS_BANDS if level <= top)
+    return f"CREATIVE FREEDOM — LEVEL {level} OF 10 ({name})\n{text}\n{_WILDNESS_FIXED}"
+
 
 def _chip_lines(raw: Any) -> list[str]:
     if not isinstance(raw, list):
@@ -299,14 +361,14 @@ def _noun(jewellery_type: str, analysis: dict[str, Any]) -> str:
 # replaces it; the {{TOKENS}} are where each generation's parts go. A token
 # whose part doesn't apply (no sliders, no chips, same type) becomes empty.
 DEFAULT_TEMPLATE = "\n\n".join([
-    TASK, REFERENCES, WHAT_TO_MAKE, "{{TYPE_MODULE}}", "{{CROSS_TYPE}}", "{{BLEND_DIRECTIONS}}",
+    TASK, REFERENCES, WHAT_TO_MAKE, "{{TYPE_MODULE}}", "{{CROSS_TYPE}}", "{{WILDNESS}}", "{{BLEND_DIRECTIONS}}",
     RESTRAINT, CONSTRUCTION, METAL_AND_SURFACE, STONES, "{{STYLE_CHOICES}}", "{{WHOLESALER_NOTE}}",
     PHOTOGRAPHY, PRIORITY, AVOID, FINAL_CHECK,
 ])
 
 TOKENS = (
     "TYPE_1", "TYPE_2", "OUTPUT_TYPE", "DESIGN_SUMMARIES", "DESIGN_1_METAL", "DISPLAY_NECK_FORM",
-    "TYPE_MODULE", "CROSS_TYPE", "BLEND_DIRECTIONS", "STYLE_CHOICES", "WHOLESALER_NOTE",
+    "TYPE_MODULE", "CROSS_TYPE", "WILDNESS", "BLEND_DIRECTIONS", "STYLE_CHOICES", "WHOLESALER_NOTE",
 )
 # Without these, sliders, chips, notes or the type rules would silently stop
 # reaching the model, so a template missing any of them is not used.
@@ -341,7 +403,13 @@ def resolve_template(raw: Optional[str]) -> tuple[str, Optional[str]]:
             "CHAMAK_BASE_PROMPT_TEMPLATE has unknown tokens, left as written: "
             + ", ".join("{{%s}}" % t for t in unknown)
         )
-    return text, "railway-" + hashlib.sha256(text.encode()).hexdigest()[:8]
+    label = "railway-" + hashlib.sha256(text.encode()).hexdigest()[:8]
+    # Templates pasted before CHAMAK_WILDNESS existed have no slot for it;
+    # give them one just ahead of the blend directions.
+    if "WILDNESS" not in found:
+        slot = next(m for m in _TOKEN.finditer(text) if m.group(1) == "BLEND_DIRECTIONS")
+        text = text[:slot.start()] + "{{WILDNESS}}\n\n" + text[slot.start():]
+    return text, label
 
 
 def _fill(text: str, values: dict[str, str]) -> str:
@@ -356,6 +424,7 @@ def compile_chamak_prompt_v3(
     note: Optional[str],
     slider_lines: list[str],
     template: str = DEFAULT_TEMPLATE,
+    wildness: Optional[int] = None,
 ) -> str:
     analysis = analysis or {}
     form_input = form_input or {}
@@ -383,6 +452,7 @@ def compile_chamak_prompt_v3(
     }
     values["TYPE_MODULE"] = _fill(TYPE_MODULES[module_1], values)
     values["CROSS_TYPE"] = _fill(CROSS_TYPE, values) if module_2 != module_1 else ""
+    values["WILDNESS"] = _fill(_wildness_block(wildness), values) if wildness is not None else ""
 
     img1 = analysis.get("image1_strengths") or []
     img2 = analysis.get("image2_strengths") or []

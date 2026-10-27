@@ -284,6 +284,11 @@ class Settings(BaseSettings):
     CHAMAK_OUTPUT_COUNT: str = "1"
     # "1K", "1.5K", "2K", "auto" or "WIDTHxHEIGHT". Empty = OPENAI_IMAGE_SIZE.
     CHAMAK_OUTPUT_RESOLUTION: str = ""
+    # 0–10: how far a design may move away from its two references (0 stays
+    # faithful, 10 invents freely). Empty = no creative-freedom instruction,
+    # i.e. the v3 prompt as it was. A per-generation "wildness" in the
+    # request overrides it. Parsed by chamak_prompt_v3.parse_wildness.
+    CHAMAK_WILDNESS: str = ""
 
     @property
     def chamak_output_count(self) -> int:

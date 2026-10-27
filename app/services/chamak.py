@@ -25,6 +25,7 @@ from app.services.chamak_prompt_v3 import (
     JEWELLERY_TYPES,
     compile_chamak_prompt_v3,
     normalize_jewellery_type,
+    parse_wildness,
     resolve_template,
 )
 from app.services.storage import (
@@ -579,12 +580,20 @@ async def run_stage4_generation_openai(
         # lines come from the same helper as 1.0, so they read identically.
         # CHAMAK_BASE_PROMPT_TEMPLATE on Railway replaces the built-in
         # template; the version label records which one made the image.
+        # CHAMAK_WILDNESS sets the creative freedom; a "wildness" sent with
+        # the generation overrides it. Both are recorded in the version label.
         template, template_label = resolve_template(settings.CHAMAK_BASE_PROMPT_TEMPLATE)
+        wildness = parse_wildness(form_json.get("wildness"))
+        if wildness is None:
+            wildness = parse_wildness(settings.CHAMAK_WILDNESS)
         compiled_prompt = compile_chamak_prompt_v3(
-            analysis, form_json, note_text, _slider_lines(analysis, form_json), template
+            analysis, form_json, note_text, _slider_lines(analysis, form_json), template, wildness
         )
-        prompt_version = settings.CHAMAK_OPENAI_PROMPT_VERSION + (
-            f"+{template_label}" if template_label else ""
+        prompt_version = settings.CHAMAK_OPENAI_PROMPT_VERSION + "".join(
+            f"+{part}" for part in (
+                f"w{wildness}" if wildness is not None else None,
+                template_label,
+            ) if part
         )
         logger.info(
             f"Compiled Chamak 2.0 prompt for {generation_id}: {compiled_prompt[:120]}...",
