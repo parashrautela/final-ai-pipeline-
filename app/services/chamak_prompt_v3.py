@@ -14,7 +14,11 @@ the previous prompt versions.
 """
 from __future__ import annotations
 
+import hashlib
+import re
 from typing import Any, Optional
+
+from app.logging import logger
 
 JEWELLERY_TYPES = (
     "necklace", "choker", "long_necklace", "pendant", "mangalsutra",
@@ -70,8 +74,8 @@ TASK = """TASK
 Create one new, original piece of fine jewellery for a jewellery wholesaler's product catalogue. You are given two reference photographs of existing jewellery. Combine them as instructed below into ONE new design, and present it as a single clean, photorealistic catalogue product photograph that is ready to show to retail buyers. The piece must look like a real, finished piece of jewellery that a skilled goldsmith in India could actually manufacture and a customer could actually wear."""
 
 REFERENCES = """REFERENCE IMAGES
-- Image 1 (the first attached image) is DESIGN 1, the CORE DESIGN. It shows {type_1_a}. Design 1 is the foundation of the new piece. The new piece is the same kind of jewellery as Design 1 and keeps Design 1's identity: its overall form and silhouette, its structure and construction, its proportions and size, its metal colour, and the way it is worn. All changes are made on top of Design 1.
-- Image 2 (the second attached image) is DESIGN 2, the NEW DIRECTION. It shows {type_2_a}. Design 2 is a source of new ideas only: motifs, patterns, stone choices, shapes, details and decorative language to bring into Design 1. Never copy Design 2 as a whole object, never place Design 2 next to Design 1, and never turn the new piece into Design 2's type of jewellery.{summaries}
+- Image 1 (the first attached image) is DESIGN 1, the CORE DESIGN. It shows {{TYPE_1}}. Design 1 is the foundation of the new piece. The new piece is the same kind of jewellery as Design 1 and keeps Design 1's identity: its overall form and silhouette, its structure and construction, its proportions and size, its metal colour, and the way it is worn. All changes are made on top of Design 1.
+- Image 2 (the second attached image) is DESIGN 2, the NEW DIRECTION. It shows {{TYPE_2}}. Design 2 is a source of new ideas only: motifs, patterns, stone choices, shapes, details and decorative language to bring into Design 1. Never copy Design 2 as a whole object, never place Design 2 next to Design 1, and never turn the new piece into Design 2's type of jewellery.{{DESIGN_SUMMARIES}}
 
 USE ONLY THE JEWELLERY FROM THE PHOTOS
 Both reference photos are shop or catalogue photos. Read only the jewellery in them. Everything else in those photos is NOT part of the design and must NOT appear in your result in any form:
@@ -82,7 +86,7 @@ Both reference photos are shop or catalogue photos. Read only the jewellery in t
 If a piece is shown worn on a mannequin, a bust or a person, mentally lift the jewellery off and use only the jewellery. Do not reproduce the shape, colour, head, face or neck of the mannequin, bust or person it was resting on. If the new piece needs a display, use only the plain display described in WHAT TO MAKE. If a word such as "Necklace" or "Pendants" is printed on a photo, ignore it completely: it is a label, not part of the jewellery, and the result must contain no text at all."""
 
 WHAT_TO_MAKE = """WHAT TO MAKE
-Make exactly one new {output_type}. Nothing else: no second piece, no matching set, no extra jewellery, no copies or variations side by side."""
+Make exactly one new {{OUTPUT_TYPE}}. Nothing else: no second piece, no matching set, no extra jewellery, no copies or variations side by side."""
 
 DISPLAY_NECK_FORM = """DISPLAY NECK FORM (the only display allowed, identical in every image)
 A plain, headless jewellery display form of a neck and upper chest, covered in smooth matte velvet in the same colour as the background, just a little lighter so its outline is softly visible. The form ENDS AT THE NECK: it is cut off straight and flat just below where the jaw would be. There is NOTHING above the neck: no head, no chin, no face, no ears, no hair. The shoulders slope gently down and are cut off by the left and right edges of the frame. The form is smooth and simple: no seams, folds, creases, stitching, texture, stand or base. It is always the same shape, the same size and the same angle, facing the camera straight on. This plain form replaces any mannequin, bust, neck or person shown in the reference photos; never copy those."""
@@ -97,15 +101,15 @@ The necklace must be shown complete, as one continuous piece:
 Keep Design 1's length and style category exactly: a choker stays a choker sitting high and close, a collar stays a collar, a short necklace stays short, a long haar or rani haar stays long. If Design 1 has several layers or strands, keep the same number of layers, each one complete and separately readable.
 DISPLAY: Show the necklace worn on the DISPLAY NECK FORM described below, seen straight from the front. The necklace sits naturally on the form, at the height where Design 1's style is worn (a choker high around the neck, a long haar falling lower on the chest), with the centre focal element at the centre of the form and both sides rising evenly around the neck. Nothing of the necklace is hidden by the form except the very back of the neck.
 
-{display_neck_form}""",
+{{DISPLAY_NECK_FORM}}""",
     "pendant": """PENDANT — COMPLETENESS AND DISPLAY
 Show the pendant complete, with its bail (the loop that the chain passes through) clearly visible and properly joined to the pendant. If Design 1 shows the pendant on a chain, include the chain and show it worn on the DISPLAY NECK FORM: the chain falls around the neck in a smooth, symmetric V, both sides equal, with the pendant hanging straight at the centre of the chest. If Design 1 shows the pendant alone, show it alone, standing upright and facing the camera on a small, plain velvet display pad, with no neck form. Keep Design 1's pendant size relative to the chain.
 
-{display_neck_form}""",
+{{DISPLAY_NECK_FORM}}""",
     "mangalsutra": """MANGALSUTRA — COMPLETENESS AND DISPLAY
 Show the complete mangalsutra: the black bead strands (keep Design 1's number of strands and bead pattern, including any gold beads or links between the black beads), the centre pendant (vati or Design 1's centre element) hanging at the centre, and the clasp at the ends. Show it worn on the DISPLAY NECK FORM, falling around the neck in a smooth, even V, both sides equal. Black beads are small, round, glossy and uniform.
 
-{display_neck_form}""",
+{{DISPLAY_NECK_FORM}}""",
     "earrings": """EARRINGS — ONE MATCHING PAIR
 Make one pair: two earrings that are exact mirror images of each other, identical in size, design, stone count, stone colour and finish. Show both earrings side by side on a plain velvet earring display stand: a simple upright stand with a horizontal bar at the top. Hook, fish-hook and hoop earrings hang from the bar; stud earrings have their posts pushed through the bar so they sit upright. Both earrings are at exactly the same height, facing the camera, with a small even gap between them, centred in the frame. Each earring is complete: the ear fitting at the top in Design 1's style (stud post, fish-hook, hook with ear chain, hoop or clip), then every tier, dome, chain, bead and drop down to the very bottom, all fully inside the frame.
 Keep Design 1's earring style: a stud stays a stud, a jhumka keeps its bell-shaped dome with the bead or pearl fringe hanging from the rim, a chandbali keeps its crescent-moon shape, a hoop stays a closed circle, a long dangler stays long. Never show an ear, an earlobe, a head or a face.""",
@@ -122,15 +126,15 @@ Make one nose ring, shown upright and facing the camera, sitting in the slot of 
     "anklet": """ANKLET — COMPLETENESS AND DISPLAY
 Make one anklet (or one matching pair if Design 1 shows a pair), shown complete and laid flat on the velvet in an open, even curve, seen from directly above. Every link, motif, bell (ghungroo) and drop is visible and evenly spaced; the clasp is visible. No foot, no ankle.""",
     "other": """COMPLETENESS AND DISPLAY
-Show the whole {output_type} complete, with every part, fastening and hanging element fully inside the frame, displayed on the simplest plain velvet display that a jewellery shop would normally use for this kind of piece. No person, no body part, no mannequin copied from the reference photos.""",
+Show the whole {{OUTPUT_TYPE}} complete, with every part, fastening and hanging element fully inside the frame, displayed on the simplest plain velvet display that a jewellery shop would normally use for this kind of piece. No person, no body part, no mannequin copied from the reference photos.""",
 }
 
 CROSS_TYPE = """TRANSLATING IDEAS FROM A DIFFERENT TYPE OF JEWELLERY
-Design 2 is {type_2_a}, but the new piece must be {type_1_a}. Do not attach, paste, shrink or repeat Design 2 itself onto Design 1. Instead, translate Design 2's design language into Design 1's form:
-- Motifs: take Design 2's motifs (for example peacock, lotus, paisley or kairi, temple deity, floral, leaf, geometric or architectural forms) and redraw them at the scale and spacing that suit {type_1_a}, in the places where {type_1_a} naturally carries decoration.
-- Stones: take Design 2's stone types, cuts, colours and setting style and use them in the natural stone positions of the {output_type}.
-- Shapes: turn Design 2's shapes (domes, drops, crescents, tiers, beads, fringes, links) into elements that belong on {type_1_a}. For example, an earring's drop can become a necklace's centre drop or a row of side drops; an earring's dome can become a pendant or a repeating bead; a necklace's motif can become the top of an earring.
-The result must read instantly as {type_1_a}, with Design 2's personality clearly visible inside it."""
+Design 2 is {{TYPE_2}}, but the new piece must be {{TYPE_1}}. Do not attach, paste, shrink or repeat Design 2 itself onto Design 1. Instead, translate Design 2's design language into Design 1's form:
+- Motifs: take Design 2's motifs (for example peacock, lotus, paisley or kairi, temple deity, floral, leaf, geometric or architectural forms) and redraw them at the scale and spacing that suit {{TYPE_1}}, in the places where {{TYPE_1}} naturally carries decoration.
+- Stones: take Design 2's stone types, cuts, colours and setting style and use them in the natural stone positions of the {{OUTPUT_TYPE}}.
+- Shapes: turn Design 2's shapes (domes, drops, crescents, tiers, beads, fringes, links) into elements that belong on {{TYPE_1}}. For example, an earring's drop can become a necklace's centre drop or a row of side drops; an earring's dome can become a pendant or a repeating bead; a necklace's motif can become the top of an earring.
+The result must read instantly as {{TYPE_1}}, with Design 2's personality clearly visible inside it."""
 
 RESTRAINT = """DESIGN RESTRAINT AND HIERARCHY
 - Build the piece around one clear focal element (for example the centre pendant of a necklace, the main dome of a jhumka, the head of a ring). Every other element supports it and is visibly smaller or quieter.
@@ -153,10 +157,10 @@ CONSTRUCTION = """CONSTRUCTION
 - Metal has a realistic, solid thickness: proper walls, rims, borders and backing plates. No paper-thin sheets, no crumpled foil, no flimsy wire where Design 1 is solid.
 - The piece obeys gravity: drops and fringes hang straight down, chains fall in smooth natural curves, nothing bends unnaturally.
 - Repeated elements (links, beads, petals, side motifs, stones in a row) are identical in size and shape and evenly spaced. Where the design is symmetric, the left side mirrors the right side exactly.
-- Proportions and size are realistic for {type_1_a} worn by an adult."""
+- Proportions and size are realistic for {{TYPE_1}} worn by an adult."""
 
 METAL_AND_SURFACE = """METAL COLOUR
-Use exactly the metal colour of Design 1{design_1_metal}. Match its hue, warmth and depth precisely. Do not drift toward a brassy, orange, greenish, pale or washed-out colour, and do not mix in a second metal colour that Design 1 does not have. (A gold-tone choice below, if present, overrides this.)
+Use exactly the metal colour of Design 1: {{DESIGN_1_METAL}}. Match its hue, warmth and depth precisely. Do not drift toward a brassy, orange, greenish, pale or washed-out colour, and do not mix in a second metal colour that Design 1 does not have. (A gold-tone choice below, if present, overrides this.)
 
 SURFACE QUALITY
 - Metal surfaces are solid, smooth and evenly finished, with crisp, clean, straight or evenly curved edges and consistent thickness, like finished cast and hand-polished jewellery.
@@ -218,7 +222,7 @@ AVOID = """AVOID
 - Image errors: cropped or cut-off parts, blur, tilted or distorted perspective, colour casts, cinematic grading, vignettes, busy or patterned backgrounds."""
 
 FINAL_CHECK = """FINAL CHECK BEFORE YOU FINISH
-- Is there exactly one {output_type}, complete, with every part inside the frame?
+- Is there exactly one {{OUTPUT_TYPE}}, complete, with every part inside the frame?
 - Is it clearly the same kind of piece as Design 1, keeping Design 1's identity, with Design 2's ideas clearly visible in it?
 - Is there no head, face, person, prop, text or logo anywhere in the image, no mannequin copied from the reference photos, and no display other than the plain velvet one described in WHAT TO MAKE? If a neck form is shown, does it end at the neck with nothing above it?
 - Is the metal the same colour as Design 1 (or the chosen gold tone), with smooth, clean, dent-free surfaces?
@@ -291,11 +295,67 @@ def _noun(jewellery_type: str, analysis: dict[str, Any]) -> str:
     return raw if raw and normalize_jewellery_type(raw) == "other" else "piece of jewellery"
 
 
+# The whole prompt as one template. CHAMAK_BASE_PROMPT_TEMPLATE on Railway
+# replaces it; the {{TOKENS}} are where each generation's parts go. A token
+# whose part doesn't apply (no sliders, no chips, same type) becomes empty.
+DEFAULT_TEMPLATE = "\n\n".join([
+    TASK, REFERENCES, WHAT_TO_MAKE, "{{TYPE_MODULE}}", "{{CROSS_TYPE}}", "{{BLEND_DIRECTIONS}}",
+    RESTRAINT, CONSTRUCTION, METAL_AND_SURFACE, STONES, "{{STYLE_CHOICES}}", "{{WHOLESALER_NOTE}}",
+    PHOTOGRAPHY, PRIORITY, AVOID, FINAL_CHECK,
+])
+
+TOKENS = (
+    "TYPE_1", "TYPE_2", "OUTPUT_TYPE", "DESIGN_SUMMARIES", "DESIGN_1_METAL", "DISPLAY_NECK_FORM",
+    "TYPE_MODULE", "CROSS_TYPE", "BLEND_DIRECTIONS", "STYLE_CHOICES", "WHOLESALER_NOTE",
+)
+# Without these, sliders, chips, notes or the type rules would silently stop
+# reaching the model, so a template missing any of them is not used.
+REQUIRED_TOKENS = ("TYPE_MODULE", "BLEND_DIRECTIONS", "STYLE_CHOICES", "WHOLESALER_NOTE")
+
+_TOKEN = re.compile(r"\{\{\s*([A-Z0-9_]+)\s*\}\}")
+
+
+def resolve_template(raw: Optional[str]) -> tuple[str, Optional[str]]:
+    """The template to use and a short label for it (None for the built-in one).
+
+    A dashboard edit that is blank or missing a required token falls back to
+    the built-in template rather than shipping a broken prompt.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return DEFAULT_TEMPLATE, None
+    # A value pasted as one line with literal "\n" sequences.
+    if "\n" not in text and "\\n" in text:
+        text = text.replace("\\n", "\n")
+    found = set(_TOKEN.findall(text))
+    missing = [t for t in REQUIRED_TOKENS if t not in found]
+    if missing:
+        logger.error(
+            "CHAMAK_BASE_PROMPT_TEMPLATE ignored — missing " + ", ".join("{{%s}}" % t for t in missing)
+            + "; using the built-in v3 prompt."
+        )
+        return DEFAULT_TEMPLATE, None
+    unknown = sorted(found - set(TOKENS))
+    if unknown:
+        logger.warning(
+            "CHAMAK_BASE_PROMPT_TEMPLATE has unknown tokens, left as written: "
+            + ", ".join("{{%s}}" % t for t in unknown)
+        )
+    return text, "railway-" + hashlib.sha256(text.encode()).hexdigest()[:8]
+
+
+def _fill(text: str, values: dict[str, str]) -> str:
+    # One pass: text inserted for a token is never scanned again, so a note
+    # that happens to contain "{{TYPE_1}}" reaches the model as written.
+    return _TOKEN.sub(lambda m: values.get(m.group(1), m.group(0)), text)
+
+
 def compile_chamak_prompt_v3(
     analysis: Optional[dict[str, Any]],
     form_input: Optional[dict[str, Any]],
     note: Optional[str],
     slider_lines: list[str],
+    template: str = DEFAULT_TEMPLATE,
 ) -> str:
     analysis = analysis or {}
     form_input = form_input or {}
@@ -304,7 +364,6 @@ def compile_chamak_prompt_v3(
     output_type = _noun(type_1, analysis)
     module_1 = _TYPES.get(type_1, ("", "other"))[1]
     module_2 = _TYPES.get(type_2, ("", "other"))[1] if type_2 else None
-    type_2_a = _with_article(_noun(type_2, analysis)) if type_2 else "a different kind of jewellery"
 
     summaries = ""
     for label, key in (("Design 1", "image1_summary"), ("Design 2", "image2_summary")):
@@ -314,23 +373,16 @@ def compile_chamak_prompt_v3(
     if summaries:
         summaries = "\n" + summaries
 
-    metal = str(analysis.get("image1_metal") or "").strip()
     values = {
-        "type_1_a": _with_article(output_type),
-        "type_2_a": type_2_a,
-        "output_type": output_type,
-        "summaries": summaries,
-        "design_1_metal": f": {metal}" if metal else ", exactly as it appears in Image 1",
-        "display_neck_form": DISPLAY_NECK_FORM,
+        "TYPE_1": _with_article(output_type),
+        "TYPE_2": _with_article(_noun(type_2, analysis)) if type_2 else "a different kind of jewellery",
+        "OUTPUT_TYPE": output_type,
+        "DESIGN_SUMMARIES": summaries,
+        "DESIGN_1_METAL": str(analysis.get("image1_metal") or "").strip() or "the exact colour it has in Image 1",
+        "DISPLAY_NECK_FORM": DISPLAY_NECK_FORM,
     }
-
-    # Templates get their placeholders filled; user-supplied text (slider
-    # labels, chips, the note) is added as-is, so a "{" in it reaches the
-    # model as written instead of breaking the format.
-    templates = [TASK, REFERENCES, WHAT_TO_MAKE + "\n\n" + TYPE_MODULES[module_1]]
-    if module_2 != module_1:
-        templates.append(CROSS_TYPE)
-    blocks = [t.format_map(values) for t in templates]
+    values["TYPE_MODULE"] = _fill(TYPE_MODULES[module_1], values)
+    values["CROSS_TYPE"] = _fill(CROSS_TYPE, values) if module_2 != module_1 else ""
 
     img1 = analysis.get("image1_strengths") or []
     img2 = analysis.get("image2_strengths") or []
@@ -339,31 +391,28 @@ def compile_chamak_prompt_v3(
         f"Design 2 observed features: {', '.join(img2)}." if img2 else "",
     ]
     features = [line for line in features if line]
-    if slider_lines:
-        blocks.append("\n".join([
+    values["BLEND_DIRECTIONS"] = (
+        "\n".join([
             "BLEND DIRECTIONS",
             "Follow the per-attribute design proportions below; neither reference automatically takes priority.",
             *features,
             *slider_lines,
-        ]))
-    elif features:
-        blocks.append("\n".join(["REFERENCE FEATURES", *features]))
-
-    blocks += [t.format_map(values) for t in (RESTRAINT, CONSTRUCTION, METAL_AND_SURFACE, STONES)]
+        ]) if slider_lines
+        else "\n".join(["REFERENCE FEATURES", *features]) if features
+        else ""
+    )
 
     chips = _chip_lines(form_input.get("style_chips"))
-    if chips:
-        blocks.append("\n".join([
-            "FINISH AND STYLE CHOICES (chosen by the wholesaler — follow these over the reference designs)",
-            *chips,
-        ]))
+    values["STYLE_CHOICES"] = "\n".join([
+        "FINISH AND STYLE CHOICES (chosen by the wholesaler — follow these over the reference designs)",
+        *chips,
+    ]) if chips else ""
 
-    if note and note.strip():
-        blocks.append(
-            "WHOLESALER'S NOTE (follow this over the blend directions and style choices, unless it asks for "
-            "something physically impossible or asks you to include a person, mannequin or text)\n"
-            + note.strip()[:_MAX_NOTE_CHARS]
-        )
+    values["WHOLESALER_NOTE"] = (
+        "WHOLESALER'S NOTE (follow this over the blend directions and style choices, unless it asks for "
+        "something physically impossible or asks you to include a person, mannequin or text)\n"
+        + note.strip()[:_MAX_NOTE_CHARS]
+    ) if note and note.strip() else ""
 
-    blocks += [t.format_map(values) for t in (PHOTOGRAPHY, PRIORITY, AVOID, FINAL_CHECK)]
-    return "\n\n".join(blocks)
+    # Empty parts leave runs of blank lines behind; fold them to one.
+    return re.sub(r"\n{3,}", "\n\n", _fill(template, values)).strip()

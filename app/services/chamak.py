@@ -1,6 +1,7 @@
 from __future__ import annotations
 from app.features import get_feature_status, is_feature_blocked
 
+import asyncio
 import base64
 import json
 import math
@@ -24,6 +25,7 @@ from app.services.chamak_prompt_v3 import (
     JEWELLERY_TYPES,
     compile_chamak_prompt_v3,
     normalize_jewellery_type,
+    resolve_template,
 )
 from app.services.storage import (
     fetch_image_bytes_and_content_type,
@@ -411,7 +413,7 @@ async def _record_attempt(
     form_json: dict,
     note_text: Optional[str],
     completed_at: str,
-) -> None:
+) -> list[dict]:
     """Append this render to output_history before the row is marked done.
 
     Written first so the app sees the full history the moment it polls 'done'.
@@ -433,6 +435,7 @@ async def _record_attempt(
             f"Could not save output_history for {generation_id} — keeping the result without it: {exc}",
             extra={"generation_id": generation_id},
         )
+    return history
 
 
 async def run_stage4_generation(
@@ -574,8 +577,14 @@ async def run_stage4_generation_openai(
 
         # Stage 3 Prompt Compilation — the v3 prompt, 2.0 only. The slider
         # lines come from the same helper as 1.0, so they read identically.
+        # CHAMAK_BASE_PROMPT_TEMPLATE on Railway replaces the built-in
+        # template; the version label records which one made the image.
+        template, template_label = resolve_template(settings.CHAMAK_BASE_PROMPT_TEMPLATE)
         compiled_prompt = compile_chamak_prompt_v3(
-            analysis, form_json, note_text, _slider_lines(analysis, form_json)
+            analysis, form_json, note_text, _slider_lines(analysis, form_json), template
+        )
+        prompt_version = settings.CHAMAK_OPENAI_PROMPT_VERSION + (
+            f"+{template_label}" if template_label else ""
         )
         logger.info(
             f"Compiled Chamak 2.0 prompt for {generation_id}: {compiled_prompt[:120]}...",
@@ -597,25 +606,41 @@ async def run_stage4_generation_openai(
         img2_bytes, img2_mime = await fetch_image_bytes_and_content_type(img2_url)
 
         # Order is load-bearing: the compiled prompt refers to Design 1 and
-        # Design 2 positionally.
-        generated_bytes = await openai_image_client.fuse_images(
-            [(img1_bytes, img1_mime), (img2_bytes, img2_mime)],
-            prompt=compiled_prompt,
-        )
-
-        stored_output = _upload_attempt(generated_bytes, wholesaler_id, generation_id)
-        output_storage_path = stored_output.url
+        # Design 2 positionally. CHAMAK_OUTPUT_COUNT renders run side by side;
+        # each is its own paid call, and each lands in output_history so the
+        # app's "All attempts" row shows them all.
+        count, size = settings.chamak_output_count, settings.chamak_output_size
+        results = await asyncio.gather(*(
+            openai_image_client.fuse_images(
+                [(img1_bytes, img1_mime), (img2_bytes, img2_mime)],
+                prompt=compiled_prompt,
+                size=size,
+            )
+            for _ in range(count)
+        ), return_exceptions=True)
+        rendered = [r for r in results if not isinstance(r, BaseException)]
+        if not rendered:
+            raise results[0]
+        if len(rendered) < count:
+            logger.warning(
+                f"Chamak 2.0: {count - len(rendered)} of {count} renders failed for {generation_id}",
+                extra={"generation_id": generation_id},
+            )
 
         completed_at = datetime.now(timezone.utc).isoformat()
-        await _record_attempt(
-            generation_id, _prior_attempts(row), stored_output, form_json, note_text, completed_at
-        )
+        history = _prior_attempts(row)
+        for generated_bytes in rendered:
+            stored_output = _upload_attempt(generated_bytes, wholesaler_id, generation_id)
+            history = await _record_attempt(
+                generation_id, history, stored_output, form_json, note_text, completed_at
+            )
+        output_storage_path = stored_output.url
 
         await update_chamak_generation(
             generation_id,
             {
                 "compiled_prompt_text": compiled_prompt,
-                "prompt_version": settings.CHAMAK_OPENAI_PROMPT_VERSION,
+                "prompt_version": prompt_version,
                 "output_image_url": output_storage_path,
                 "output_variants": stored_output.variants or None,
                 "status": "done",

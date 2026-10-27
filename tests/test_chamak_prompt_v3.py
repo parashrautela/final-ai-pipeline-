@@ -1,19 +1,24 @@
 import re
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from app.config import Settings, parse_openai_image_size, settings
 from app.services.chamak import (
     SET_PHOTO_MESSAGE,
     _slider_lines,
     call_openai_vision_analysis,
     compile_chamak_prompt,
     run_stage1_vision_analysis,
+    run_stage4_generation_openai,
 )
 from app.services.chamak_prompt_v3 import (
+    DEFAULT_TEMPLATE,
     JEWELLERY_TYPES,
     STYLE_CHIPS,
     compile_chamak_prompt_v3,
     normalize_jewellery_type,
+    resolve_template,
 )
 
 
@@ -50,7 +55,7 @@ class PromptV3(unittest.TestCase):
         self.assertNotIn("TRANSLATING IDEAS", same)
         mixed = build({"jewelry_type": "ring", "type_mismatch": True})
         self.assertIn("Design 2 is a different kind of jewellery, but the new piece must be a ring.", mixed)
-        self.assertIn("Use exactly the metal colour of Design 1, exactly as it appears in Image 1.", mixed)
+        self.assertIn("Use exactly the metal colour of Design 1: the exact colour it has in Image 1.", mixed)
 
     def test_slider_lines_match_the_original_prompt_exactly(self):
         analysis = {"image1_strengths": ["floral dome"], "image2_weaknesses": ["flat disc"]}
@@ -89,6 +94,97 @@ class PromptV3(unittest.TestCase):
         self.assertEqual(normalize_jewellery_type("rani haar"), "long_necklace")
         self.assertEqual(normalize_jewellery_type("brooch"), "other")
         self.assertIsNone(normalize_jewellery_type(""))
+
+
+class RailwayTemplate(unittest.TestCase):
+    def test_blank_variable_means_the_built_in_prompt(self):
+        self.assertEqual(resolve_template(""), (DEFAULT_TEMPLATE, None))
+        self.assertEqual(resolve_template("   "), (DEFAULT_TEMPLATE, None))
+
+    def test_a_valid_template_is_used_and_labelled(self):
+        raw = "MY PROMPT for {{TYPE_1}}\n{{TYPE_MODULE}}\n{{BLEND_DIRECTIONS}}\n{{STYLE_CHOICES}}\n{{WHOLESALER_NOTE}}\nEND"
+        template, label = resolve_template(raw)
+        self.assertEqual(template, raw)
+        self.assertRegex(label, r"^railway-[0-9a-f]{8}$")
+        prompt = compile_chamak_prompt_v3({"image1_type": "ring"}, {}, "Thin band", [], template)
+        self.assertTrue(prompt.startswith("MY PROMPT for a ring\nRING — COMPLETENESS"))
+        self.assertIn("Thin band", prompt)
+        self.assertNotIn("{{", prompt)
+
+    def test_a_template_missing_a_required_token_is_not_used(self):
+        self.assertEqual(resolve_template("Just make it pretty. {{TYPE_MODULE}}"), (DEFAULT_TEMPLATE, None))
+        self.assertEqual(resolve_template("Old style {{jewelry_type}} template"), (DEFAULT_TEMPLATE, None))
+
+    def test_one_line_value_with_literal_newlines_is_unescaped(self):
+        raw = "A\\n{{TYPE_MODULE}}\\n{{BLEND_DIRECTIONS}}\\n{{STYLE_CHOICES}}\\n{{WHOLESALER_NOTE}}"
+        template, _ = resolve_template(raw)
+        self.assertEqual(template.splitlines()[0], "A")
+
+    def test_note_text_is_never_treated_as_a_token(self):
+        prompt = build({"image1_type": "ring"}, {}, "keep {{TYPE_1}} literally")
+        self.assertIn("keep {{TYPE_1}} literally", prompt)
+
+
+class RailwayOutputSettings(unittest.TestCase):
+    def test_resolution_accepts_aliases_and_valid_sizes_only(self):
+        self.assertEqual(parse_openai_image_size("2K"), "2048x2048")
+        self.assertEqual(parse_openai_image_size(" 1.5k "), "1536x1536")
+        self.assertEqual(parse_openai_image_size("1536x1024"), "1536x1024")
+        self.assertEqual(parse_openai_image_size("auto"), "auto")
+        for bad in ("", "4000x4000", "1000x1000", "3840x3840", "4096x1024", "big"):
+            self.assertEqual(parse_openai_image_size(bad), "", bad)
+
+    def test_count_is_clamped_and_typos_fall_back_to_one(self):
+        for raw, expected in (("1", 1), ("3", 3), ("9", 4), ("0", 1), ("two", 1), (" 2 ", 2)):
+            self.assertEqual(Settings(_env_file=None, CHAMAK_OUTPUT_COUNT=raw).chamak_output_count, expected, raw)
+
+    def test_bad_resolution_falls_back_to_openai_image_size(self):
+        s = Settings(_env_file=None, CHAMAK_OUTPUT_RESOLUTION="huge", OPENAI_IMAGE_SIZE="1536x1536")
+        self.assertEqual(s.chamak_output_size, "1536x1536")
+        self.assertEqual(Settings(_env_file=None, CHAMAK_OUTPUT_RESOLUTION="1K").chamak_output_size, "1024x1024")
+
+
+class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
+    async def test_count_size_and_template_label_reach_the_render(self):
+        row = {"wholesaler_id": "w1", "source_image_1_url": "one", "source_image_2_url": "two",
+               "stage1_analysis_json": {"image1_type": "ring"}}
+        template = "T {{TYPE_MODULE}} {{BLEND_DIRECTIONS}} {{STYLE_CHOICES}} {{WHOLESALER_NOTE}}"
+        fuse = AsyncMock(side_effect=[b"a", RuntimeError("one render failed"), b"c"])
+        uploads = [SimpleNamespace(url=f"w1/job/{n}.png", variants={}) for n in range(2)]
+        with patch.object(settings, "CHAMAK_OUTPUT_COUNT", "3"), \
+             patch.object(settings, "CHAMAK_OUTPUT_RESOLUTION", "1K"), \
+             patch.object(settings, "CHAMAK_BASE_PROMPT_TEMPLATE", template), \
+             patch("app.services.chamak.get_feature_status", return_value=(False, None)), \
+             patch("app.services.chamak.fetch_chamak_generation", AsyncMock(return_value=row)), \
+             patch("app.services.chamak.fetch_image_bytes_and_content_type", AsyncMock(return_value=(b"i", "image/jpeg"))), \
+             patch("app.services.chamak.openai_image_client.fuse_images", fuse), \
+             patch("app.services.chamak._upload_attempt", side_effect=uploads), \
+             patch("app.services.chamak.update_chamak_generation", AsyncMock()) as update, \
+             patch("app.services.chamak._refund_failed_generation", AsyncMock()) as refund:
+            await run_stage4_generation_openai("job")
+        self.assertEqual(fuse.await_count, 3)
+        self.assertEqual({c.kwargs["size"] for c in fuse.await_args_list}, {"1024x1024"})
+        self.assertTrue(fuse.await_args.kwargs["prompt"].startswith("T RING — COMPLETENESS"))
+        history = [c.args[1]["output_history"] for c in update.await_args_list if "output_history" in c.args[1]][-1]
+        self.assertEqual([a["attempt"] for a in history], [1, 2])
+        final = update.await_args.args[1]
+        self.assertEqual(final["status"], "done")
+        self.assertEqual(final["output_image_url"], "w1/job/1.png")
+        self.assertRegex(final["prompt_version"], r"^v3\.0-chamak-openai\+railway-[0-9a-f]{8}$")
+        refund.assert_not_awaited()
+
+    async def test_all_renders_failing_still_fails_and_refunds(self):
+        row = {"wholesaler_id": "w1", "source_image_1_url": "one", "source_image_2_url": "two"}
+        with patch.object(settings, "CHAMAK_OUTPUT_COUNT", "2"), \
+             patch("app.services.chamak.get_feature_status", return_value=(False, None)), \
+             patch("app.services.chamak.fetch_chamak_generation", AsyncMock(return_value=row)), \
+             patch("app.services.chamak.fetch_image_bytes_and_content_type", AsyncMock(return_value=(b"i", "image/jpeg"))), \
+             patch("app.services.chamak.openai_image_client.fuse_images", AsyncMock(side_effect=RuntimeError("down"))), \
+             patch("app.services.chamak.update_chamak_generation", AsyncMock()) as update, \
+             patch("app.services.chamak._refund_failed_generation", AsyncMock()) as refund:
+            await run_stage4_generation_openai("job")
+        self.assertEqual(update.await_args.args[1]["status"], "failed")
+        refund.assert_awaited_once()
 
 
 class SetPhotoRejection(unittest.IsolatedAsyncioTestCase):

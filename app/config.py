@@ -5,6 +5,34 @@ from pydantic_settings import BaseSettings
 
 _log = logging.getLogger(__name__)
 
+_IMAGE_SIZE_ALIASES = {"1k": "1024x1024", "1.5k": "1536x1536", "2k": "2048x2048", "auto": "auto"}
+
+
+def parse_openai_image_size(raw: str) -> str:
+    """A size gpt-image-2 accepts, or "" when `raw` is blank or not one.
+
+    Rules from the API reference: both edges multiples of 16, longest edge at
+    most 3840, long:short at most 3:1, and no more pixels than 3840x2160.
+    """
+    value = (raw or "").strip().lower().replace(" ", "")
+    if not value:
+        return ""
+    if value in _IMAGE_SIZE_ALIASES:
+        return _IMAGE_SIZE_ALIASES[value]
+    try:
+        width, height = (int(edge) for edge in value.split("x"))
+    except ValueError:
+        _log.warning("Ignoring CHAMAK_OUTPUT_RESOLUTION=%r: not WIDTHxHEIGHT or 1K/1.5K/2K/auto", raw)
+        return ""
+    if (
+        width % 16 or height % 16 or min(width, height) <= 0
+        or max(width, height) > 3840 or max(width, height) > 3 * min(width, height)
+        or width * height > 3840 * 2160
+    ):
+        _log.warning("Ignoring CHAMAK_OUTPUT_RESOLUTION=%r: outside gpt-image-2's size rules", raw)
+        return ""
+    return f"{width}x{height}"
+
 # jewellery design if the instruction isn't specific enough.
 # Use {item_description} as a placeholder — it is replaced at runtime with the
 # actual product title and jewellery type (e.g. "Diamond Tennis Bracelet (bracelet)").
@@ -243,6 +271,30 @@ class Settings(BaseSettings):
     # nothing but latency.
     OPENAI_IMAGE_MAX_REF_EDGE: int = 1024
     CHAMAK_OPENAI_PROMPT_VERSION: str = "v3.0-chamak-openai"
+
+    # Chamak 2.0 knobs editable from the Railway dashboard. All three are read
+    # as plain strings and parsed defensively below: a typo in the dashboard
+    # must fall back to the default, never stop the service from booting.
+    #
+    # Empty = the built-in v3 prompt. Otherwise the whole prompt, with
+    # {{TOKENS}} where the per-generation parts go (see chamak_prompt_v3).
+    CHAMAK_BASE_PROMPT_TEMPLATE: str = ""
+    # Images per generation, 1–4. Each one is a separate paid OpenAI call;
+    # the wholesaler is still charged once per generation.
+    CHAMAK_OUTPUT_COUNT: str = "1"
+    # "1K", "1.5K", "2K", "auto" or "WIDTHxHEIGHT". Empty = OPENAI_IMAGE_SIZE.
+    CHAMAK_OUTPUT_RESOLUTION: str = ""
+
+    @property
+    def chamak_output_count(self) -> int:
+        try:
+            return max(1, min(int(str(self.CHAMAK_OUTPUT_COUNT).strip()), 4))
+        except ValueError:
+            return 1
+
+    @property
+    def chamak_output_size(self) -> str:
+        return parse_openai_image_size(self.CHAMAK_OUTPUT_RESOLUTION) or self.OPENAI_IMAGE_SIZE
 
     # Apple Push Notification service (APNs)
     APNS_KEY_ID: str = ""
