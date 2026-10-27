@@ -236,6 +236,14 @@ class SetPhotoRejection(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fields["content_flag_hit"], "ok")
         self.assertEqual(refund.call_args.args[1], "Set photo rejected")
 
+    async def test_analysis_carries_the_railway_default_wildness_for_the_app(self):
+        with patch.object(settings, "CHAMAK_WILDNESS", "6"):
+            fields, _ = await self.run_stage1({"content_flag": "ok"})
+        self.assertEqual(fields["stage1_analysis_json"]["default_wildness"], 6)
+        with patch.object(settings, "CHAMAK_WILDNESS", ""):
+            fields, _ = await self.run_stage1({"content_flag": "ok"})
+        self.assertIsNone(fields["stage1_analysis_json"]["default_wildness"])
+
     async def test_single_pieces_go_through(self):
         fields, refund = await self.run_stage1({"content_flag": "ok", "image1_is_set": False, "image2_is_set": False})
         self.assertEqual(fields["status"], "awaiting_input")

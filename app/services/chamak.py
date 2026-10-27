@@ -243,6 +243,10 @@ async def run_stage1_vision_analysis(
         if content_flag not in ("ok", "not_jewelry", "inappropriate", "too_unclear_to_assess"):
             content_flag = "ok"
 
+        # The apps start their wildness slider here, so CHAMAK_WILDNESS on
+        # Railway sets the default the wholesaler sees (None = app default).
+        analysis["default_wildness"] = parse_wildness(settings.CHAMAK_WILDNESS)
+
         # If content is flagged as invalid or inappropriate, set status to failed
         status = "failed" if content_flag != "ok" else "awaiting_input"
 
