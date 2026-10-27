@@ -242,7 +242,7 @@ class Settings(BaseSettings):
     # input token budget caps out around 1536 tokens, so sending larger buys
     # nothing but latency.
     OPENAI_IMAGE_MAX_REF_EDGE: int = 1024
-    CHAMAK_OPENAI_PROMPT_VERSION: str = "v2.0-chamak-openai"
+    CHAMAK_OPENAI_PROMPT_VERSION: str = "v3.0-chamak-openai"
 
     # Apple Push Notification service (APNs)
     APNS_KEY_ID: str = ""

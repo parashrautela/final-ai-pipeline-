@@ -20,9 +20,20 @@ from app.db.repository import (
 )
 from app.logging import logger
 from app.services.ai import nanobana_client, openai_image_client, _request_with_retry, is_quota_error
+from app.services.chamak_prompt_v3 import (
+    JEWELLERY_TYPES,
+    compile_chamak_prompt_v3,
+    normalize_jewellery_type,
+)
 from app.services.storage import (
     fetch_image_bytes_and_content_type,
     upload_chamak_output,
+)
+
+
+SET_PHOTO_MESSAGE = (
+    "One of your photos shows a full set. Please pick a photo of a single piece "
+    "(one necklace, one pair of earrings, etc.) and try again."
 )
 
 
@@ -69,7 +80,18 @@ async def call_openai_vision_analysis(
         "- image2_weaknesses: (list of strings) 3-5 specific aesthetic flaws, structural bulkiness, or design weaknesses in Design 2.\n"
         "- near_identical: (boolean) True if Design 1 and Design 2 are nearly identical pieces.\n"
         "- type_mismatch: (boolean) True if the two designs belong to completely different jewelry categories (e.g. ring vs necklace).\n"
-        "- content_flag: (string) Exactly one of: 'ok', 'not_jewelry', 'inappropriate', 'too_unclear_to_assess'."
+        "- content_flag: (string) Exactly one of: 'ok', 'not_jewelry', 'inappropriate', 'too_unclear_to_assess'.\n"
+        "- image1_type / image2_type: (string) The kind of jewellery in each image. Exactly one of: "
+        f"{', '.join(JEWELLERY_TYPES)}. Judge only the jewellery, not the mannequin, text or background.\n"
+        "- image1_is_set / image2_is_set: (boolean) True if the image shows more than one KIND of piece together "
+        "(for example a necklace with earrings, or a necklace with a maang tikka). "
+        "A single pair of matching earrings, bangles or anklets is NOT a set.\n"
+        "- image1_summary / image2_summary: (string) One plain sentence describing only the jewellery: its type, "
+        "main motif, main stones and their colours, metal colour and finish. "
+        "Ignore mannequins, busts, backgrounds and any text on the photo.\n"
+        "- image1_metal: (string) A short, precise description of Design 1's metal colour and finish as it would "
+        "look under neutral daylight, e.g. 'warm deep 22K-style yellow gold, high polish' or "
+        "'rose gold with antique darkening in the recesses'."
     )
 
     payload = {
@@ -110,6 +132,13 @@ async def call_openai_vision_analysis(
         "near_identical": bool(parsed.get("near_identical", False)),
         "type_mismatch": bool(parsed.get("type_mismatch", False)),
         "content_flag": str(parsed.get("content_flag", "ok")),
+        "image1_type": normalize_jewellery_type(parsed.get("image1_type")),
+        "image2_type": normalize_jewellery_type(parsed.get("image2_type")),
+        "image1_is_set": parsed.get("image1_is_set") is True,
+        "image2_is_set": parsed.get("image2_is_set") is True,
+        "image1_summary": str(parsed.get("image1_summary") or ""),
+        "image2_summary": str(parsed.get("image2_summary") or ""),
+        "image1_metal": str(parsed.get("image1_metal") or ""),
     }
 
 
@@ -207,21 +236,27 @@ async def run_stage1_vision_analysis(
         # If content is flagged as invalid or inappropriate, set status to failed
         status = "failed" if content_flag != "ok" else "awaiting_input"
 
-        await update_chamak_generation(
-            generation_id,
-            {
-                "stage1_analysis_json": analysis,
-                "content_flag_hit": content_flag,
-                "status": status,
-            },
-        )
+        # A photo of a full set (necklace + earrings together) gives the fusion
+        # no single piece to build on, so it is turned away here. The flag is
+        # left at "ok" — the apps decode content_flag_hit as a fixed enum — and
+        # the reason travels in error_message, which they show first.
+        is_set = analysis.get("image1_is_set") or analysis.get("image2_is_set")
+        updates: dict[str, Any] = {
+            "stage1_analysis_json": analysis,
+            "content_flag_hit": content_flag,
+        }
+        if status == "awaiting_input" and is_set:
+            status = "failed"
+            updates["error_message"] = SET_PHOTO_MESSAGE
+        updates["status"] = status
+
+        await update_chamak_generation(generation_id, updates)
 
         if status == "failed":
             # Rejecting the images is our call, not a mistake they made, so we
             # do not keep their credits for it.
-            await _refund_failed_generation(
-                generation_id, f"Content check failed: {content_flag}", charge
-            )
+            reason = "Set photo rejected" if is_set and content_flag == "ok" else f"Content check failed: {content_flag}"
+            await _refund_failed_generation(generation_id, reason, charge)
         logger.info(
             f"Chamak Stage 1 completed for {generation_id} -> status={status}, flag={content_flag}"
         )
@@ -251,19 +286,10 @@ async def run_stage1_vision_analysis(
         await _refund_failed_generation(generation_id, "Analysis failed", charge)
 
 
-def compile_chamak_prompt(
-    analysis: Optional[dict[str, Any]],
-    form_input: Optional[dict[str, Any]],
-    note: Optional[str],
-) -> str:
-    """Stage 3: High-cohesion prompt synthesis for Chamak AI Fusion."""
-    analysis = analysis or {}
-    form_input = form_input or {}
-    jewelry_type = (analysis.get("jewelry_type") or "luxury jewelry").strip()
-
+def _slider_lines(analysis: dict[str, Any], form_input: dict[str, Any]) -> list[str]:
+    """One "X% Design 1; Y% Design 2" line per slider, shared by every prompt version."""
     img1_strengths = analysis.get("image1_strengths") or []
     img2_weaknesses = analysis.get("image2_weaknesses") or []
-    img2_strengths = analysis.get("image2_strengths") or []
 
     # Both clients display 0 as Design 1 and 1 as Design 2. Older web
     # clients saved a flat 0–100 dictionary instead of slider_weights.
@@ -274,13 +300,7 @@ def compile_chamak_prompt(
         item["id"]: item for item in (form_input.get("attribute_context") or [])
         if isinstance(item, dict) and "id" in item
     }
-    fusion_directives = [
-        f"Masterpiece luxury {jewelry_type} design fusion from Design 1 and Design 2. "
-        "Create one coherent piece. Follow the per-attribute design proportions below; "
-        "neither reference automatically takes priority.",
-        f"Design 1 observed features: {', '.join(img1_strengths)}.",
-        f"Design 2 observed features: {', '.join(img2_strengths)}.",
-    ]
+    lines: list[str] = []
     if isinstance(raw_weights, dict):
         for key, value in raw_weights.items():
             try:
@@ -300,11 +320,35 @@ def compile_chamak_prompt(
                     feature = context.get("attribute") or first
                 if index < len(img2_weaknesses):
                     second = img2_weaknesses[index]
-            fusion_directives.append(
+            lines.append(
                 f"{feature}: {(1-weight)*100:g}% Design 1 ({first}); "
                 f"{weight*100:g}% Design 2 ({second}). "
                 "A 0% contribution must not influence this attribute."
             )
+    return lines
+
+
+def compile_chamak_prompt(
+    analysis: Optional[dict[str, Any]],
+    form_input: Optional[dict[str, Any]],
+    note: Optional[str],
+) -> str:
+    """Stage 3: High-cohesion prompt synthesis for Chamak AI Fusion."""
+    analysis = analysis or {}
+    form_input = form_input or {}
+    jewelry_type = (analysis.get("jewelry_type") or "luxury jewelry").strip()
+
+    img1_strengths = analysis.get("image1_strengths") or []
+    img2_strengths = analysis.get("image2_strengths") or []
+
+    fusion_directives = [
+        f"Masterpiece luxury {jewelry_type} design fusion from Design 1 and Design 2. "
+        "Create one coherent piece. Follow the per-attribute design proportions below; "
+        "neither reference automatically takes priority.",
+        f"Design 1 observed features: {', '.join(img1_strengths)}.",
+        f"Design 2 observed features: {', '.join(img2_strengths)}.",
+    ]
+    fusion_directives.extend(_slider_lines(analysis, form_input))
 
     # Artisan custom note
     if note and note.strip():
@@ -490,10 +534,10 @@ async def run_stage4_generation_openai(
 ) -> None:
     """Stage 4 for Chamak 2.0 — same fusion, rendered by OpenAI instead.
 
-    A deliberate near-copy of `run_stage4_generation`. Every step that is not
-    the vendor call is identical, including the compiled prompt, so a 1.0 run
-    and a 2.0 run on the same row differ by exactly one variable and can be
-    compared directly.
+    A deliberate near-copy of `run_stage4_generation`. Since prompt v3 the two
+    differ in the vendor call AND the prompt: 2.0 is the path both apps use,
+    so it carries the type-aware v3 prompt (`chamak_prompt_v3`), while 1.0
+    keeps the original compiler untouched.
 
     The one substantive difference is the point of the exercise: 1.0 calls
     `nanobana_client.enhance_image(image_url=img1_url, ...)`, which takes a
@@ -528,8 +572,11 @@ async def run_stage4_generation_openai(
         form_json = row.get("wholesaler_form_json") or {}
         note_text = row.get("note_text")
 
-        # Stage 3 Prompt Compilation — the SAME compiler as 1.0, deliberately.
-        compiled_prompt = compile_chamak_prompt(analysis, form_json, note_text)
+        # Stage 3 Prompt Compilation — the v3 prompt, 2.0 only. The slider
+        # lines come from the same helper as 1.0, so they read identically.
+        compiled_prompt = compile_chamak_prompt_v3(
+            analysis, form_json, note_text, _slider_lines(analysis, form_json)
+        )
         logger.info(
             f"Compiled Chamak 2.0 prompt for {generation_id}: {compiled_prompt[:120]}...",
             extra={"generation_id": generation_id},
