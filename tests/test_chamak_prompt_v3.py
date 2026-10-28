@@ -1,7 +1,11 @@
 import re
 import unittest
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import httpx
+from PIL import Image
 
 from app.config import Settings, parse_openai_image_size, settings
 from app.services.chamak import (
@@ -18,9 +22,15 @@ from app.services.chamak_prompt_v3 import (
     STYLE_CHIPS,
     compile_chamak_prompt_v3,
     normalize_jewellery_type,
-    parse_wildness,
+    parse_level,
     resolve_template,
 )
+
+
+def png(opaque):
+    out = BytesIO()
+    Image.new("RGBA", (4, 4), (200, 160, 40, 255 if opaque else 0)).save(out, "PNG")
+    return out.getvalue()
 
 
 def build(analysis, form=None, note=None):
@@ -105,7 +115,11 @@ class RailwayTemplate(unittest.TestCase):
     def test_a_valid_template_is_used_and_labelled(self):
         raw = "MY PROMPT for {{TYPE_1}}\n{{TYPE_MODULE}}\n{{BLEND_DIRECTIONS}}\n{{STYLE_CHOICES}}\n{{WHOLESALER_NOTE}}\nEND"
         template, label = resolve_template(raw)
-        self.assertEqual(template.replace("{{WILDNESS}}\n\n", ""), raw)
+        added = ("{{WILDNESS}}\n\n", "{{STRUCTURE}}\n\n", "\n\n{{BACKGROUND_MODE}}")
+        for slot in added:
+            self.assertIn(slot, template)
+            template_without = template.replace(slot, "") if slot == added[0] else template_without.replace(slot, "")
+        self.assertEqual(template_without, raw)
         self.assertRegex(label, r"^railway-[0-9a-f]{8}$")
         prompt = compile_chamak_prompt_v3({"image1_type": "ring"}, {}, "Thin band", [], template)
         self.assertTrue(prompt.startswith("MY PROMPT for a ring\nRING — COMPLETENESS"))
@@ -126,6 +140,22 @@ class RailwayTemplate(unittest.TestCase):
         self.assertIn("keep {{TYPE_1}} literally", prompt)
 
 
+class StructureAndBackground(unittest.TestCase):
+    def test_each_structure_band_is_distinct_and_sits_after_wildness(self):
+        names = {0: "KEEP THE SHAPE", 2: "SMALL SHAPE CHANGES", 5: "SOME SHAPE CHANGES", 7: "BIG SHAPE CHANGES", 10: "COMPLETELY NEW SHAPE"}
+        for level, name in names.items():
+            prompt = compile_chamak_prompt_v3({"image1_type": "ring"}, {}, None, [], DEFAULT_TEMPLATE, 5, level)
+            self.assertIn(f"STRUCTURE — LEVEL {level} OF 10 ({name})", prompt)
+            self.assertIn("the new piece stays a ring", prompt)
+            self.assertLess(prompt.index("CREATIVE FREEDOM"), prompt.index("STRUCTURE — LEVEL"))
+
+    def test_transparent_mode_overrides_every_display(self):
+        prompt = compile_chamak_prompt_v3({"image1_type": "necklace"}, {}, None, [], DEFAULT_TEMPLATE, transparent=True)
+        self.assertIn("TRANSPARENT BACKGROUND (this overrides BACKGROUND AND DISPLAY MATERIAL", prompt)
+        self.assertLess(prompt.index("BACKGROUND AND DISPLAY MATERIAL"), prompt.index("TRANSPARENT BACKGROUND"))
+        self.assertNotIn("TRANSPARENT BACKGROUND", build({"image1_type": "necklace"}))
+
+
 class Wildness(unittest.TestCase):
     def test_unset_wildness_changes_nothing(self):
         self.assertEqual(build({"image1_type": "ring"}), compile_chamak_prompt_v3({"image1_type": "ring"}, {}, None, [], DEFAULT_TEMPLATE, None))
@@ -141,14 +171,14 @@ class Wildness(unittest.TestCase):
 
     def test_values_are_parsed_and_clamped(self):
         for raw, expected in (("7", 7), (" 3 ", 3), (6.6, 7), ("15", 10), ("-2", 0), (4, 4)):
-            self.assertEqual(parse_wildness(raw), expected, raw)
+            self.assertEqual(parse_level(raw), expected, raw)
         for raw in ("", None, "wild", True, float("nan")):
-            self.assertIsNone(parse_wildness(raw), raw)
+            self.assertIsNone(parse_level(raw), raw)
 
     def test_a_railway_template_without_a_wildness_slot_gets_one(self):
         raw = "A\n{{TYPE_MODULE}}\n{{BLEND_DIRECTIONS}}\n{{STYLE_CHOICES}}\n{{WHOLESALER_NOTE}}"
         template, label = resolve_template(raw)
-        self.assertIn("{{WILDNESS}}\n\n{{BLEND_DIRECTIONS}}", template)
+        self.assertIn("{{WILDNESS}}\n\n{{STRUCTURE}}\n\n{{BLEND_DIRECTIONS}}", template)
         self.assertEqual(label, resolve_template(raw)[1])
         prompt = compile_chamak_prompt_v3({"image1_type": "ring"}, {}, None, [], template, 9)
         self.assertIn("(WILD)", prompt)
@@ -204,6 +234,55 @@ class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(final["prompt_version"], r"^v3\.0-chamak-openai\+w7\+railway-[0-9a-f]{8}$")
         refund.assert_not_awaited()
 
+    async def run_worker(self, form, fuse, extra_patches=()):
+        row = {"wholesaler_id": "w1", "source_image_1_url": "one", "source_image_2_url": "two",
+               "stage1_analysis_json": {"image1_type": "ring", "image1_strengths": ["Flower pattern"]},
+               "wholesaler_form_json": form}
+        with patch.object(settings, "CHAMAK_OUTPUT_COUNT", "1"), \
+             patch.object(settings, "CHAMAK_BASE_PROMPT_TEMPLATE", ""), \
+             patch.object(settings, "CHAMAK_WILDNESS", ""), \
+             patch.object(settings, "CHAMAK_STRUCTURE", "2"), \
+             patch("app.services.chamak.get_feature_status", return_value=(False, None)), \
+             patch("app.services.chamak.fetch_chamak_generation", AsyncMock(return_value=row)), \
+             patch("app.services.chamak.fetch_image_bytes_and_content_type", AsyncMock(return_value=(b"i", "image/jpeg"))), \
+             patch("app.services.chamak.openai_image_client.fuse_images", fuse), \
+             patch("app.services.chamak._upload_attempt", return_value=SimpleNamespace(url="w1/job/0.png", variants={})), \
+             patch("app.services.chamak.update_chamak_generation", AsyncMock()) as update, \
+             patch("app.services.chamak._refund_failed_generation", AsyncMock()):
+            await run_stage4_generation_openai("job")
+        history = [c.args[1]["output_history"] for c in update.await_args_list if "output_history" in c.args[1]][-1]
+        return update.await_args.args[1], history[-1]
+
+    async def test_every_attempt_saves_the_settings_that_made_it(self):
+        form = {"slider_weights": {"attr_0": 0.7}, "attribute_context": [{"id": "attr_0", "attribute": "Flower pattern"}],
+                "wildness": 6, "style_chips": ["matte"]}
+        final, attempt = await self.run_worker(form, AsyncMock(return_value=png(opaque=True)))
+        self.assertEqual(attempt["settings"], {
+            "mix": [{"name": "Flower pattern", "design_2_percent": 70}], "wildness": 6, "structure": 2,
+            "background": "kept", "style_chips": ["matte"], "note": None,
+        })
+        self.assertEqual(final["prompt_version"], "v3.0-chamak-openai+w6+s2")
+
+    async def test_remove_background_asks_for_a_transparent_png_and_checks_it(self):
+        fuse = AsyncMock(return_value=png(opaque=False))
+        final, attempt = await self.run_worker({"background": "transparent", "structure": 0}, fuse)
+        self.assertEqual(fuse.await_args.kwargs["background"], "transparent")
+        self.assertIn("TRANSPARENT BACKGROUND", fuse.await_args.kwargs["prompt"])
+        self.assertIn("LEVEL 0 OF 10 (KEEP THE SHAPE)", fuse.await_args.kwargs["prompt"])
+        self.assertEqual(attempt["settings"]["background"], "removed")
+        self.assertTrue(final["prompt_version"].endswith("+s0+bg-t"))
+
+    async def test_an_opaque_or_refused_cut_out_is_recorded_honestly(self):
+        _, attempt = await self.run_worker({"background": "transparent"}, AsyncMock(return_value=png(opaque=True)))
+        self.assertEqual(attempt["settings"]["background"], "not_removed")
+        refusal = httpx.HTTPStatusError("bad", request=httpx.Request("POST", "https://x"), response=httpx.Response(400))
+        fuse = AsyncMock(side_effect=[refusal, png(opaque=True)])
+        final, attempt = await self.run_worker({"background": "transparent"}, fuse)
+        self.assertEqual(fuse.await_count, 2)
+        self.assertNotIn("background", fuse.await_args.kwargs)
+        self.assertEqual(final["status"], "done")
+        self.assertEqual(attempt["settings"]["background"], "not_removed")
+
     async def test_all_renders_failing_still_fails_and_refunds(self):
         row = {"wholesaler_id": "w1", "source_image_1_url": "one", "source_image_2_url": "two"}
         with patch.object(settings, "CHAMAK_OUTPUT_COUNT", "2"), \
@@ -237,9 +316,10 @@ class SetPhotoRejection(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refund.call_args.args[1], "Set photo rejected")
 
     async def test_analysis_carries_the_railway_default_wildness_for_the_app(self):
-        with patch.object(settings, "CHAMAK_WILDNESS", "6"):
+        with patch.object(settings, "CHAMAK_WILDNESS", "6"), patch.object(settings, "CHAMAK_STRUCTURE", "1"):
             fields, _ = await self.run_stage1({"content_flag": "ok"})
         self.assertEqual(fields["stage1_analysis_json"]["default_wildness"], 6)
+        self.assertEqual(fields["stage1_analysis_json"]["default_structure"], 1)
         with patch.object(settings, "CHAMAK_WILDNESS", ""):
             fields, _ = await self.run_stage1({"content_flag": "ok"})
         self.assertIsNone(fields["stage1_analysis_json"]["default_wildness"])

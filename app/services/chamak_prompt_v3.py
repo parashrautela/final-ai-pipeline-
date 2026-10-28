@@ -301,7 +301,7 @@ _WILDNESS_FIXED = (
 )
 
 
-def parse_wildness(raw: Any) -> Optional[int]:
+def parse_level(raw: Any) -> Optional[int]:
     """0–10 from a dashboard or request value; None when blank or not a number."""
     if isinstance(raw, bool) or raw is None:
         return None
@@ -317,6 +317,55 @@ def parse_wildness(raw: Any) -> Optional[int]:
 def _wildness_block(level: int) -> str:
     name, text = next((n, t) for top, n, t in _WILDNESS_BANDS if level <= top)
     return f"CREATIVE FREEDOM — LEVEL {level} OF 10 ({name})\n{text}\n{_WILDNESS_FIXED}"
+
+
+# CHAMAK_STRUCTURE, 0–10: how much the shape and build of Design 1 may
+# change. Wildness decides how inventive the ideas are; this decides the
+# outline, layers and layout, and wins where the two overlap.
+_STRUCTURE_BANDS = (
+    (1, "KEEP THE SHAPE",
+     "Keep Design 1's structure exactly: the same outline and silhouette, the same length and size, the "
+     "same number of layers, strands, tiers and drop rows, the same layout of the main parts and the same "
+     "way they are joined. Changes happen only in motifs, stones, surface and details."),
+    (3, "SMALL SHAPE CHANGES",
+     "Keep Design 1's outline, layout and number of layers. Small proportion changes are allowed: the "
+     "focal element a little larger or smaller, slightly different spacing, slightly longer or shorter "
+     "drops."),
+    (6, "SOME SHAPE CHANGES",
+     "Keep the piece recognisably Design 1's form, but its structure may change: different proportions, "
+     "a new shape for the focal element, a new arrangement of the side elements, and one layer, tier or "
+     "row of drops added or removed. Structural ideas from Design 2, such as its tiers or its outline, may "
+     "be brought in."),
+    (8, "BIG SHAPE CHANGES",
+     "Build a new structure for the piece: a new outline and layout, a different number of layers or "
+     "tiers, and new ways the parts connect. Design 2's structure may lead, translated into Design 1's "
+     "type."),
+    (10, "COMPLETELY NEW SHAPE",
+     "Design a completely new structure for this type of jewellery: a new outline, layering, layout and "
+     "construction. Only the type and wearability carry over from Design 1."),
+)
+
+_STRUCTURE_FIXED = (
+    "At every level the new piece stays {{TYPE_1}}, complete, wearable and realistic to manufacture, and "
+    "the construction rules apply in full. This setting decides the shape and structure of the piece: "
+    "where the creative-freedom level says something different about silhouette, layout or structure, "
+    "follow this setting."
+)
+
+
+def _structure_block(level: int) -> str:
+    name, text = next((n, t) for top, n, t in _STRUCTURE_BANDS if level <= top)
+    return f"STRUCTURE — LEVEL {level} OF 10 ({name})\n{text}\n{_STRUCTURE_FIXED}"
+
+
+# The wholesaler's "Remove background" choice. Sent to OpenAI as
+# background="transparent"; the prompt drops every display form, because a
+# neck form or stand would stay in the cut-out.
+TRANSPARENT_BACKGROUND = """TRANSPARENT BACKGROUND (this overrides BACKGROUND AND DISPLAY MATERIAL and every DISPLAY instruction above)
+- The background is fully transparent: no colour, no velvet, no surface, no floor, no shadow and no reflection beneath the piece.
+- Show only the jewellery itself, with no neck form, stand, cushion, hook or any other display. Arrange it as it is naturally worn and seen from the front: a necklace, mangalsutra or chain in its natural worn U or V shape as if on an invisible neck; a pair of earrings side by side, upright, at the same height; a ring upright at a slight three-quarter angle; a bangle or bracelet upright showing its decorated face.
+- Edges are crisp and clean all around the piece, including fine chains, drops and the gaps inside open work, so the cut-out can be placed on any background.
+- The lighting stays as described: neutral white, never changing the colour of the metal."""
 
 
 def _chip_lines(raw: Any) -> list[str]:
@@ -361,14 +410,15 @@ def _noun(jewellery_type: str, analysis: dict[str, Any]) -> str:
 # replaces it; the {{TOKENS}} are where each generation's parts go. A token
 # whose part doesn't apply (no sliders, no chips, same type) becomes empty.
 DEFAULT_TEMPLATE = "\n\n".join([
-    TASK, REFERENCES, WHAT_TO_MAKE, "{{TYPE_MODULE}}", "{{CROSS_TYPE}}", "{{WILDNESS}}", "{{BLEND_DIRECTIONS}}",
-    RESTRAINT, CONSTRUCTION, METAL_AND_SURFACE, STONES, "{{STYLE_CHOICES}}", "{{WHOLESALER_NOTE}}",
-    PHOTOGRAPHY, PRIORITY, AVOID, FINAL_CHECK,
+    TASK, REFERENCES, WHAT_TO_MAKE, "{{TYPE_MODULE}}", "{{CROSS_TYPE}}", "{{WILDNESS}}", "{{STRUCTURE}}",
+    "{{BLEND_DIRECTIONS}}", RESTRAINT, CONSTRUCTION, METAL_AND_SURFACE, STONES, "{{STYLE_CHOICES}}",
+    "{{WHOLESALER_NOTE}}", PHOTOGRAPHY, "{{BACKGROUND_MODE}}", PRIORITY, AVOID, FINAL_CHECK,
 ])
 
 TOKENS = (
     "TYPE_1", "TYPE_2", "OUTPUT_TYPE", "DESIGN_SUMMARIES", "DESIGN_1_METAL", "DISPLAY_NECK_FORM",
-    "TYPE_MODULE", "CROSS_TYPE", "WILDNESS", "BLEND_DIRECTIONS", "STYLE_CHOICES", "WHOLESALER_NOTE",
+    "TYPE_MODULE", "CROSS_TYPE", "WILDNESS", "STRUCTURE", "BLEND_DIRECTIONS", "STYLE_CHOICES",
+    "WHOLESALER_NOTE", "BACKGROUND_MODE",
 )
 # Without these, sliders, chips, notes or the type rules would silently stop
 # reaching the model, so a template missing any of them is not used.
@@ -404,11 +454,15 @@ def resolve_template(raw: Optional[str]) -> tuple[str, Optional[str]]:
             + ", ".join("{{%s}}" % t for t in unknown)
         )
     label = "railway-" + hashlib.sha256(text.encode()).hexdigest()[:8]
-    # Templates pasted before CHAMAK_WILDNESS existed have no slot for it;
-    # give them one just ahead of the blend directions.
-    if "WILDNESS" not in found:
+    # Templates pasted before these settings existed have no slot for them:
+    # wildness and structure go just ahead of the blend directions, the
+    # background override at the end (it names the blocks it overrides).
+    missing_slots = [t for t in ("WILDNESS", "STRUCTURE") if t not in found]
+    if missing_slots:
         slot = next(m for m in _TOKEN.finditer(text) if m.group(1) == "BLEND_DIRECTIONS")
-        text = text[:slot.start()] + "{{WILDNESS}}\n\n" + text[slot.start():]
+        text = text[:slot.start()] + "".join("{{%s}}\n\n" % t for t in missing_slots) + text[slot.start():]
+    if "BACKGROUND_MODE" not in found:
+        text += "\n\n{{BACKGROUND_MODE}}"
     return text, label
 
 
@@ -425,6 +479,8 @@ def compile_chamak_prompt_v3(
     slider_lines: list[str],
     template: str = DEFAULT_TEMPLATE,
     wildness: Optional[int] = None,
+    structure: Optional[int] = None,
+    transparent: bool = False,
 ) -> str:
     analysis = analysis or {}
     form_input = form_input or {}
@@ -453,6 +509,8 @@ def compile_chamak_prompt_v3(
     values["TYPE_MODULE"] = _fill(TYPE_MODULES[module_1], values)
     values["CROSS_TYPE"] = _fill(CROSS_TYPE, values) if module_2 != module_1 else ""
     values["WILDNESS"] = _fill(_wildness_block(wildness), values) if wildness is not None else ""
+    values["STRUCTURE"] = _fill(_structure_block(structure), values) if structure is not None else ""
+    values["BACKGROUND_MODE"] = TRANSPARENT_BACKGROUND if transparent else ""
 
     img1 = analysis.get("image1_strengths") or []
     img2 = analysis.get("image2_strengths") or []

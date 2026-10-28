@@ -4,12 +4,14 @@ from app.features import get_feature_status, is_feature_blocked
 import asyncio
 import base64
 import json
+from io import BytesIO
 import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
+from PIL import Image
 import sentry_sdk
 
 from app.config import settings
@@ -25,7 +27,7 @@ from app.services.chamak_prompt_v3 import (
     JEWELLERY_TYPES,
     compile_chamak_prompt_v3,
     normalize_jewellery_type,
-    parse_wildness,
+    parse_level,
     resolve_template,
 )
 from app.services.storage import (
@@ -245,7 +247,8 @@ async def run_stage1_vision_analysis(
 
         # The apps start their wildness slider here, so CHAMAK_WILDNESS on
         # Railway sets the default the wholesaler sees (None = app default).
-        analysis["default_wildness"] = parse_wildness(settings.CHAMAK_WILDNESS)
+        analysis["default_wildness"] = parse_level(settings.CHAMAK_WILDNESS)
+        analysis["default_structure"] = parse_level(settings.CHAMAK_STRUCTURE)
 
         # If content is flagged as invalid or inappropriate, set status to failed
         status = "failed" if content_flag != "ok" else "awaiting_input"
@@ -382,6 +385,86 @@ def compile_chamak_prompt(
     return compiled_prompt
 
 
+def _has_transparency(image_bytes: bytes) -> bool:
+    """True when the PNG really has see-through pixels."""
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            if image.mode not in ("RGBA", "LA", "PA") and "transparency" not in image.info:
+                return False
+            return image.convert("RGBA").getchannel("A").getextrema()[0] < 255
+    except Exception:
+        return False
+
+
+async def _render_openai(
+    images: list[tuple[bytes, str]],
+    prompt: str,
+    size: str,
+    transparent: bool,
+    generation_id: str,
+) -> tuple[bytes, bool]:
+    """One Chamak 2.0 render, and whether it came back as a real cut-out.
+
+    OpenAI lists transparency on gpt-image-2 as a preview, so a refusal of
+    the parameter falls back to a normal render instead of failing the
+    generation; the attempt then records the background as not removed.
+    """
+    if not transparent:
+        return await openai_image_client.fuse_images(images, prompt=prompt, size=size), False
+    try:
+        rendered = await openai_image_client.fuse_images(
+            images, prompt=prompt, size=size, background="transparent"
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 400:
+            raise
+        logger.warning(
+            f"OpenAI refused a transparent background for {generation_id}; rendering without it",
+            extra={"generation_id": generation_id},
+        )
+        return await openai_image_client.fuse_images(images, prompt=prompt, size=size), False
+    return rendered, _has_transparency(rendered)
+
+
+def _attempt_settings(
+    analysis: dict[str, Any],
+    form_json: dict[str, Any],
+    note_text: Optional[str],
+    wildness: Optional[int],
+    structure: Optional[int],
+    background: str,
+) -> dict[str, Any]:
+    """The settings behind one render, named the way the app shows them."""
+    img1_strengths = analysis.get("image1_strengths") or []
+    contexts = {
+        item["id"]: item for item in (form_json.get("attribute_context") or [])
+        if isinstance(item, dict) and "id" in item
+    }
+    mix = []
+    weights = form_json.get("slider_weights")
+    if isinstance(weights, dict):
+        for key, value in weights.items():
+            try:
+                weight = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(weight) or not 0 <= weight <= 1:
+                continue
+            name = contexts.get(key, {}).get("attribute")
+            if not name and key.startswith("attr_") and key[5:].isdigit() and int(key[5:]) < len(img1_strengths):
+                name = img1_strengths[int(key[5:])]
+            mix.append({"name": name or key.replace("_", " "), "design_2_percent": round(weight * 100)})
+    chips = form_json.get("style_chips")
+    return {
+        "mix": mix,
+        "wildness": wildness,
+        "structure": structure,
+        "background": background,
+        "style_chips": [c for c in chips if isinstance(c, str)] if isinstance(chips, list) else [],
+        "note": (note_text or "").strip() or None,
+    }
+
+
 def _prior_attempts(row: dict) -> list[dict]:
     """Fusion attempts already made on this row, oldest first.
 
@@ -425,6 +508,7 @@ async def _record_attempt(
     form_json: dict,
     note_text: Optional[str],
     completed_at: str,
+    settings: Optional[dict] = None,
 ) -> list[dict]:
     """Append this render to output_history before the row is marked done.
 
@@ -439,6 +523,7 @@ async def _record_attempt(
         "slider_weights": form_json.get("slider_weights") or form_json.get("weights"),
         "note": note_text,
         "created_at": completed_at,
+        **({"settings": settings} if settings else {}),
     }]
     try:
         await update_chamak_generation(generation_id, {"output_history": history})
@@ -591,18 +676,26 @@ async def run_stage4_generation_openai(
         # lines come from the same helper as 1.0, so they read identically.
         # CHAMAK_BASE_PROMPT_TEMPLATE on Railway replaces the built-in
         # template; the version label records which one made the image.
-        # CHAMAK_WILDNESS sets the creative freedom; a "wildness" sent with
-        # the generation overrides it. Both are recorded in the version label.
+        # CHAMAK_WILDNESS / CHAMAK_STRUCTURE set the defaults; the values the
+        # app sends with the generation override them. "background":
+        # "transparent" asks for a cut-out PNG. All of it goes in the label.
         template, template_label = resolve_template(settings.CHAMAK_BASE_PROMPT_TEMPLATE)
-        wildness = parse_wildness(form_json.get("wildness"))
+        wildness = parse_level(form_json.get("wildness"))
         if wildness is None:
-            wildness = parse_wildness(settings.CHAMAK_WILDNESS)
+            wildness = parse_level(settings.CHAMAK_WILDNESS)
+        structure = parse_level(form_json.get("structure"))
+        if structure is None:
+            structure = parse_level(settings.CHAMAK_STRUCTURE)
+        transparent = form_json.get("background") == "transparent"
         compiled_prompt = compile_chamak_prompt_v3(
-            analysis, form_json, note_text, _slider_lines(analysis, form_json), template, wildness
+            analysis, form_json, note_text, _slider_lines(analysis, form_json), template,
+            wildness, structure, transparent,
         )
         prompt_version = settings.CHAMAK_OPENAI_PROMPT_VERSION + "".join(
             f"+{part}" for part in (
                 f"w{wildness}" if wildness is not None else None,
+                f"s{structure}" if structure is not None else None,
+                "bg-t" if transparent else None,
                 template_label,
             ) if part
         )
@@ -631,10 +724,9 @@ async def run_stage4_generation_openai(
         # app's "All attempts" row shows them all.
         count, size = settings.chamak_output_count, settings.chamak_output_size
         results = await asyncio.gather(*(
-            openai_image_client.fuse_images(
+            _render_openai(
                 [(img1_bytes, img1_mime), (img2_bytes, img2_mime)],
-                prompt=compiled_prompt,
-                size=size,
+                compiled_prompt, size, transparent, generation_id,
             )
             for _ in range(count)
         ), return_exceptions=True)
@@ -649,10 +741,12 @@ async def run_stage4_generation_openai(
 
         completed_at = datetime.now(timezone.utc).isoformat()
         history = _prior_attempts(row)
-        for generated_bytes in rendered:
+        for generated_bytes, cut_out in rendered:
             stored_output = _upload_attempt(generated_bytes, wholesaler_id, generation_id)
+            background = ("removed" if cut_out else "not_removed") if transparent else "kept"
             history = await _record_attempt(
-                generation_id, history, stored_output, form_json, note_text, completed_at
+                generation_id, history, stored_output, form_json, note_text, completed_at,
+                _attempt_settings(analysis, form_json, note_text, wildness, structure, background),
             )
         output_storage_path = stored_output.url
 

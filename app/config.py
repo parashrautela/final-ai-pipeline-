@@ -287,8 +287,12 @@ class Settings(BaseSettings):
     # 0–10: how far a design may move away from its two references (0 stays
     # faithful, 10 invents freely). Empty = no creative-freedom instruction,
     # i.e. the v3 prompt as it was. A per-generation "wildness" in the
-    # request overrides it. Parsed by chamak_prompt_v3.parse_wildness.
+    # request overrides it. Parsed by chamak_prompt_v3.parse_level.
     CHAMAK_WILDNESS: str = ""
+    # 0–10: how much the shape and build of Design 1 may change (0 keeps the
+    # shape, 10 is a completely new structure). Same rules as CHAMAK_WILDNESS:
+    # empty = no instruction, a per-generation "structure" overrides it.
+    CHAMAK_STRUCTURE: str = ""
 
     @property
     def chamak_output_count(self) -> int:

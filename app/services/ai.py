@@ -390,6 +390,7 @@ class OpenAIImageClient:
         *,
         prompt: str,
         size: str | None = None,
+        background: str | None = None,
     ) -> bytes:
         """Blend several reference images into ONE new image.
 
@@ -428,6 +429,10 @@ class OpenAIImageClient:
             "size": size,
             "n": "1",
         }
+        if background:
+            # "transparent" needs a format with an alpha channel.
+            form["background"] = background
+            form["output_format"] = "png"
 
         logger.info(
             f"OpenAI image fusion — {len(images)} source images, "
