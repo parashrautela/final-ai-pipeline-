@@ -405,15 +405,20 @@ async def _render_openai(
 ) -> tuple[bytes, bool]:
     """One Chamak 2.0 render, and whether it came back as a real cut-out.
 
-    OpenAI lists transparency on gpt-image-2 as a preview, so a refusal of
-    the parameter falls back to a normal render instead of failing the
+    gpt-image-2 refuses background=transparent, so cut-outs go to
+    CHAMAK_TRANSPARENT_MODEL at a size that model accepts. If that is refused
+    too, the render falls back to a normal one instead of failing the
     generation; the attempt then records the background as not removed.
     """
     if not transparent:
         return await openai_image_client.fuse_images(images, prompt=prompt, size=size), False
     try:
         rendered = await openai_image_client.fuse_images(
-            images, prompt=prompt, size=size, background="transparent"
+            images,
+            prompt=prompt,
+            size=settings.CHAMAK_TRANSPARENT_SIZE,
+            background="transparent",
+            model=settings.CHAMAK_TRANSPARENT_MODEL,
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code != 400:

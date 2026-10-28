@@ -391,6 +391,7 @@ class OpenAIImageClient:
         prompt: str,
         size: str | None = None,
         background: str | None = None,
+        model: str | None = None,
     ) -> bytes:
         """Blend several reference images into ONE new image.
 
@@ -424,7 +425,7 @@ class OpenAIImageClient:
         ]
         size = size or settings.OPENAI_IMAGE_SIZE
         form = {
-            "model": settings.OPENAI_IMAGE_MODEL,
+            "model": model or settings.OPENAI_IMAGE_MODEL,
             "prompt": active_prompt,
             "size": size,
             "n": "1",
@@ -436,7 +437,7 @@ class OpenAIImageClient:
 
         logger.info(
             f"OpenAI image fusion — {len(images)} source images, "
-            f"model={settings.OPENAI_IMAGE_MODEL}, "
+            f"model={form['model']}, "
             f"size={size}, "
             f"prompt={len(active_prompt)} chars"
         )

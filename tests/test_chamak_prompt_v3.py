@@ -149,6 +149,13 @@ class StructureAndBackground(unittest.TestCase):
             self.assertIn("the new piece stays a ring", prompt)
             self.assertLess(prompt.index("CREATIVE FREEDOM"), prompt.index("STRUCTURE — LEVEL"))
 
+    def test_cut_out_prompts_never_mention_a_display(self):
+        for jewellery_type in JEWELLERY_TYPES:
+            prompt = compile_chamak_prompt_v3({"image1_type": jewellery_type}, {}, None, [], DEFAULT_TEMPLATE, transparent=True)
+            module = prompt.split("WHAT TO MAKE", 1)[1].split("DESIGN RESTRAINT", 1)[0]
+            for word in ("velvet", "NECK FORM", "display stand", "cushion", "bangle roll", "display hook", "{{"):
+                self.assertNotIn(word, module, (jewellery_type, word))
+
     def test_transparent_mode_overrides_every_display(self):
         prompt = compile_chamak_prompt_v3({"image1_type": "necklace"}, {}, None, [], DEFAULT_TEMPLATE, transparent=True)
         self.assertIn("TRANSPARENT BACKGROUND (this overrides BACKGROUND AND DISPLAY MATERIAL", prompt)
@@ -267,6 +274,8 @@ class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
         fuse = AsyncMock(return_value=png(opaque=False))
         final, attempt = await self.run_worker({"background": "transparent", "structure": 0}, fuse)
         self.assertEqual(fuse.await_args.kwargs["background"], "transparent")
+        self.assertEqual(fuse.await_args.kwargs["model"], "gpt-image-1.5")
+        self.assertEqual(fuse.await_args.kwargs["size"], "1024x1024")
         self.assertIn("TRANSPARENT BACKGROUND", fuse.await_args.kwargs["prompt"])
         self.assertIn("LEVEL 0 OF 10 (KEEP THE SHAPE)", fuse.await_args.kwargs["prompt"])
         self.assertEqual(attempt["settings"]["background"], "removed")

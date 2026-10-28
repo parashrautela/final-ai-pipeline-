@@ -293,6 +293,12 @@ class Settings(BaseSettings):
     # shape, 10 is a completely new structure). Same rules as CHAMAK_WILDNESS:
     # empty = no instruction, a per-generation "structure" overrides it.
     CHAMAK_STRUCTURE: str = ""
+    # "Remove background" renders. gpt-image-2 answers background=transparent
+    # with "Transparent background is not supported for this model" (tested
+    # 2026-10-28), so cut-outs use a model that does support it. That model
+    # only takes 1024x1024, 1536x1024, 1024x1536 or auto.
+    CHAMAK_TRANSPARENT_MODEL: str = "gpt-image-1.5"
+    CHAMAK_TRANSPARENT_SIZE: str = "1024x1024"
 
     @property
     def chamak_output_count(self) -> int:

@@ -358,12 +358,72 @@ def _structure_block(level: int) -> str:
     return f"STRUCTURE — LEVEL {level} OF 10 ({name})\n{text}\n{_STRUCTURE_FIXED}"
 
 
+# In a cut-out every display form would stay in the PNG, so for "Remove
+# background" each type module's display sentences are swapped for the piece
+# shown on its own. Swapping beats overriding them later: gpt-image-1.5, the
+# cut-out model, kept the neck form when the prompt only overrode it.
+_CUT_OUT_DISPLAY = {
+    "necklace": [(
+        "DISPLAY: Show the necklace worn on the DISPLAY NECK FORM described below, seen straight from the front. The necklace sits naturally on the form, at the height where Design 1's style is worn (a choker high around the neck, a long haar falling lower on the chest), with the centre focal element at the centre of the form and both sides rising evenly around the neck. Nothing of the necklace is hidden by the form except the very back of the neck.\n\n{{DISPLAY_NECK_FORM}}",
+        "DISPLAY: No display form. Show the necklace on its own, seen straight from the front, in its natural worn U or V shape as if on an invisible neck, with the centre focal element at the bottom centre and both sides rising evenly.",
+    )],
+    "pendant": [(
+        "If Design 1 shows the pendant on a chain, include the chain and show it worn on the DISPLAY NECK FORM: the chain falls around the neck in a smooth, symmetric V, both sides equal, with the pendant hanging straight at the centre of the chest. If Design 1 shows the pendant alone, show it alone, standing upright and facing the camera on a small, plain velvet display pad, with no neck form.",
+        "If Design 1 shows the pendant on a chain, include the chain, falling in a smooth, symmetric V, both sides equal, with the pendant hanging straight at the centre, as if on an invisible neck. If Design 1 shows the pendant alone, show it alone, upright and facing the camera.",
+    ), ("\n\n{{DISPLAY_NECK_FORM}}", "")],
+    "mangalsutra": [(
+        "Show it worn on the DISPLAY NECK FORM, falling around the neck in a smooth, even V, both sides equal.",
+        "Show it on its own in a smooth, even V, both sides equal, as if on an invisible neck.",
+    ), ("\n\n{{DISPLAY_NECK_FORM}}", "")],
+    "earrings": [(
+        "Show both earrings side by side on a plain velvet earring display stand: a simple upright stand with a horizontal bar at the top. Hook, fish-hook and hoop earrings hang from the bar; stud earrings have their posts pushed through the bar so they sit upright.",
+        "Show both earrings side by side, upright, as if hanging, with nothing holding them.",
+    )],
+    "ring": [(
+        "Show it sitting upright in the slot of a small, plain velvet ring cushion, turned at",
+        "Show it standing upright on its own, turned at",
+    )],
+    "bangle": [(
+        "Show it standing upright, resting on a short, plain, horizontal velvet bangle roll (a smooth velvet cylinder), turned at",
+        "Show it standing upright on its own, turned at",
+    ), (
+        "A pair sits side by side on the same roll, slightly overlapping.",
+        "A pair stands side by side, slightly overlapping.",
+    )],
+    "bracelet": [(
+        "shown wrapped around a plain, oval velvet bracelet cushion, front facing the camera, so its full decorated front and its round worn shape are visible.",
+        "shown upright in its round worn shape on its own, front facing the camera, so its full decorated front is visible.",
+    ), ("the clasp may sit at the back of the cushion.", "the clasp may sit at the back.")],
+    "maang_tikka": [(
+        "shown hanging vertically from a small, plain velvet display hook at the top of the frame:",
+        "shown hanging vertically on its own:",
+    )],
+    "nose_ring": [(", sitting in the slot of a small, plain velvet ring cushion:", ":")],
+    "anklet": [(
+        "laid flat on the velvet in an open, even curve, seen from directly above.",
+        "laid out in an open, even curve, seen from directly above.",
+    )],
+    "other": [(
+        "displayed on the simplest plain velvet display that a jewellery shop would normally use for this kind of piece.",
+        "shown on its own, with no display.",
+    )],
+}
+
+
+def _type_module(module: str, cut_out: bool) -> str:
+    text = TYPE_MODULES[module]
+    if cut_out:
+        for old, new in _CUT_OUT_DISPLAY[module]:
+            text = text.replace(old, new)
+    return text
+
+
 # The wholesaler's "Remove background" choice. Sent to OpenAI as
 # background="transparent"; the prompt drops every display form, because a
 # neck form or stand would stay in the cut-out.
 TRANSPARENT_BACKGROUND = """TRANSPARENT BACKGROUND (this overrides BACKGROUND AND DISPLAY MATERIAL and every DISPLAY instruction above)
 - The background is fully transparent: no colour, no velvet, no surface, no floor, no shadow and no reflection beneath the piece.
-- Show only the jewellery itself, with no neck form, stand, cushion, hook or any other display. Arrange it as it is naturally worn and seen from the front: a necklace, mangalsutra or chain in its natural worn U or V shape as if on an invisible neck; a pair of earrings side by side, upright, at the same height; a ring upright at a slight three-quarter angle; a bangle or bracelet upright showing its decorated face.
+- Show only the jewellery itself, with no mannequin, bust, neck form, stand, cushion, hook or any other display, not even a dark or shadowy one. Arrange it as it is naturally worn and seen from the front: a necklace, mangalsutra or chain in its natural worn U or V shape as if on an invisible neck; a pair of earrings side by side, upright, at the same height; a ring upright at a slight three-quarter angle; a bangle or bracelet upright showing its decorated face.
 - Edges are crisp and clean all around the piece, including fine chains, drops and the gaps inside open work, so the cut-out can be placed on any background.
 - The lighting stays as described: neutral white, never changing the colour of the metal."""
 
@@ -506,7 +566,7 @@ def compile_chamak_prompt_v3(
         "DESIGN_1_METAL": str(analysis.get("image1_metal") or "").strip() or "the exact colour it has in Image 1",
         "DISPLAY_NECK_FORM": DISPLAY_NECK_FORM,
     }
-    values["TYPE_MODULE"] = _fill(TYPE_MODULES[module_1], values)
+    values["TYPE_MODULE"] = _fill(_type_module(module_1, transparent), values)
     values["CROSS_TYPE"] = _fill(CROSS_TYPE, values) if module_2 != module_1 else ""
     values["WILDNESS"] = _fill(_wildness_block(wildness), values) if wildness is not None else ""
     values["STRUCTURE"] = _fill(_structure_block(structure), values) if structure is not None else ""
