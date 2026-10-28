@@ -221,6 +221,7 @@ class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
              patch.object(settings, "CHAMAK_OUTPUT_RESOLUTION", "1K"), \
              patch.object(settings, "CHAMAK_BASE_PROMPT_TEMPLATE", template), \
              patch.object(settings, "CHAMAK_WILDNESS", "7"), \
+             patch.object(settings, "CHAMAK_CUTOUT_ENGINE", "openai"), \
              patch("app.services.chamak.get_feature_status", return_value=(False, None)), \
              patch("app.services.chamak.fetch_chamak_generation", AsyncMock(return_value=row)), \
              patch("app.services.chamak.fetch_image_bytes_and_content_type", AsyncMock(return_value=(b"i", "image/jpeg"))), \
@@ -241,7 +242,7 @@ class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(final["prompt_version"], r"^v3\.0-chamak-openai\+w7\+railway-[0-9a-f]{8}$")
         refund.assert_not_awaited()
 
-    async def run_worker(self, form, fuse, extra_patches=()):
+    async def run_worker(self, form, fuse, engine="openai", has_room=True, cut=None):
         row = {"wholesaler_id": "w1", "source_image_1_url": "one", "source_image_2_url": "two",
                "stage1_analysis_json": {"image1_type": "ring", "image1_strengths": ["Flower pattern"]},
                "wholesaler_form_json": form}
@@ -249,6 +250,9 @@ class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
              patch.object(settings, "CHAMAK_BASE_PROMPT_TEMPLATE", ""), \
              patch.object(settings, "CHAMAK_WILDNESS", ""), \
              patch.object(settings, "CHAMAK_STRUCTURE", "2"), \
+             patch.object(settings, "CHAMAK_CUTOUT_ENGINE", engine), \
+             patch("app.services.chamak.cutout.has_room", return_value=has_room), \
+             patch("app.services.chamak.cutout.remove_background", cut or AssertionError("model must not run in tests")) as cut_mock, \
              patch("app.services.chamak.get_feature_status", return_value=(False, None)), \
              patch("app.services.chamak.fetch_chamak_generation", AsyncMock(return_value=row)), \
              patch("app.services.chamak.fetch_image_bytes_and_content_type", AsyncMock(return_value=(b"i", "image/jpeg"))), \
@@ -258,7 +262,38 @@ class WorkerUsesRailwaySettings(unittest.IsolatedAsyncioTestCase):
              patch("app.services.chamak._refund_failed_generation", AsyncMock()):
             await run_stage4_generation_openai("job")
         history = [c.args[1]["output_history"] for c in update.await_args_list if "output_history" in c.args[1]][-1]
+        self.cut_mock = cut_mock
         return update.await_args.args[1], history[-1]
+
+    async def test_server_cut_out_renders_full_size_on_white_then_removes_it_here(self):
+        fuse = AsyncMock(return_value=png(opaque=True))
+        final, attempt = await self.run_worker({"background": "transparent"}, fuse, engine="birefnet",
+                                               cut=lambda data: png(opaque=False))
+        self.assertEqual(fuse.await_count, 1)
+        self.assertNotIn("background", fuse.await_args.kwargs)
+        self.assertNotIn("model", fuse.await_args.kwargs)
+        self.assertIn("PLAIN WHITE BACKGROUND FOR CUT-OUT", fuse.await_args.kwargs["prompt"])
+        self.assertNotIn("TRANSPARENT BACKGROUND (", fuse.await_args.kwargs["prompt"])
+        self.assertEqual(attempt["settings"]["background"], "removed")
+        self.assertTrue(final["prompt_version"].endswith("+bg-bf"))
+
+    async def test_no_memory_for_a_server_cut_out_uses_openai_instead(self):
+        fuse = AsyncMock(return_value=png(opaque=False))
+        _, attempt = await self.run_worker({"background": "transparent"}, fuse, engine="birefnet", has_room=False)
+        self.assertEqual(fuse.await_count, 1)
+        self.assertEqual(fuse.await_args.kwargs["background"], "transparent")
+        self.assertIn("TRANSPARENT BACKGROUND (", fuse.await_args.kwargs["prompt"])
+        self.assertEqual(attempt["settings"]["background"], "removed")
+
+    async def test_a_failed_server_cut_out_falls_back_to_openai(self):
+        def broken(_):
+            raise RuntimeError("killed")
+        fuse = AsyncMock(side_effect=[png(opaque=True), png(opaque=False)])
+        final, attempt = await self.run_worker({"background": "transparent"}, fuse, engine="birefnet", cut=broken)
+        self.assertEqual(fuse.await_count, 2)
+        self.assertEqual(fuse.await_args.kwargs["model"], "gpt-image-1.5")
+        self.assertEqual(final["status"], "done")
+        self.assertEqual(attempt["settings"]["background"], "removed")
 
     async def test_every_attempt_saves_the_settings_that_made_it(self):
         form = {"slider_weights": {"attr_0": 0.7}, "attribute_context": [{"id": "attr_0", "attribute": "Flower pattern"}],

@@ -58,3 +58,8 @@ CMD ["python", "-m", "uvicorn", "app.main:app", \
      "--no-access-log"]
 # Bake the verified foreground model alongside the image encoder.
 RUN python -m app.services.jewellery_subject
+# Bake the verified background-removal model for Chamak "Remove background"
+# (~970 MB; app.services.cutout). Downloading it at first use would make the
+# first cut-out after every deploy wait minutes.
+ENV CHAMAK_CUTOUT_MODEL_PATH=/home/appuser/.cache/chamak-cutout/birefnet-general.onnx
+RUN python -m app.services.cutout

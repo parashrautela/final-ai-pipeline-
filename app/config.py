@@ -299,6 +299,12 @@ class Settings(BaseSettings):
     # only takes 1024x1024, 1536x1024, 1024x1536 or auto.
     CHAMAK_TRANSPARENT_MODEL: str = "gpt-image-1.5"
     CHAMAK_TRANSPARENT_SIZE: str = "1024x1024"
+    # How "Remove background" is made. "birefnet" (default): gpt-image-2 at
+    # full size on white, background removed on this server
+    # (app.services.cutout) — needs ~5 GB of free memory per cut-out and falls
+    # back to "openai" without it. "openai": the transparent render above,
+    # softer and 1024px. Switchable from Railway without a deploy.
+    CHAMAK_CUTOUT_ENGINE: str = "birefnet"
 
     @property
     def chamak_output_count(self) -> int:

@@ -23,6 +23,7 @@ from app.db.repository import (
 )
 from app.logging import logger
 from app.services.ai import nanobana_client, openai_image_client, _request_with_retry, is_quota_error
+from app.services import cutout
 from app.services.chamak_prompt_v3 import (
     JEWELLERY_TYPES,
     compile_chamak_prompt_v3,
@@ -402,16 +403,39 @@ async def _render_openai(
     size: str,
     transparent: bool,
     generation_id: str,
+    fallback_prompt: Optional[str] = None,
 ) -> tuple[bytes, bool]:
     """One Chamak 2.0 render, and whether it came back as a real cut-out.
 
-    gpt-image-2 refuses background=transparent, so cut-outs go to
+    With a `fallback_prompt` the cut-out is two-step: gpt-image-2 renders at
+    full size on white (`prompt`) and app.services.cutout removes the white
+    on this server. Without the memory for that, or if it fails, it falls
+    back to OpenAI's own cut-out with `fallback_prompt`.
+
+    gpt-image-2 refuses background=transparent, so OpenAI cut-outs go to
     CHAMAK_TRANSPARENT_MODEL at a size that model accepts. If that is refused
     too, the render falls back to a normal one instead of failing the
     generation; the attempt then records the background as not removed.
     """
     if not transparent:
         return await openai_image_client.fuse_images(images, prompt=prompt, size=size), False
+    if fallback_prompt is not None:
+        if cutout.has_room():
+            on_white = await openai_image_client.fuse_images(images, prompt=prompt, size=size)
+            try:
+                cut = await asyncio.to_thread(cutout.remove_background, on_white)
+                return cut, _has_transparency(cut)
+            except Exception as exc:
+                logger.warning(
+                    f"Server cut-out failed for {generation_id} ({exc}); using OpenAI's cut-out instead",
+                    extra={"generation_id": generation_id},
+                )
+        else:
+            logger.warning(
+                f"Not enough free memory for a server cut-out for {generation_id}; using OpenAI's cut-out instead",
+                extra={"generation_id": generation_id},
+            )
+        prompt = fallback_prompt
     try:
         rendered = await openai_image_client.fuse_images(
             images,
@@ -692,15 +716,24 @@ async def run_stage4_generation_openai(
         if structure is None:
             structure = parse_level(settings.CHAMAK_STRUCTURE)
         transparent = form_json.get("background") == "transparent"
-        compiled_prompt = compile_chamak_prompt_v3(
-            analysis, form_json, note_text, _slider_lines(analysis, form_json), template,
-            wildness, structure, transparent,
-        )
+        # CHAMAK_CUTOUT_ENGINE=birefnet renders on white and cuts out here;
+        # the OpenAI transparent prompt is kept as its fallback.
+        two_step = transparent and settings.CHAMAK_CUTOUT_ENGINE.strip().lower() == "birefnet"
+        slider_lines = _slider_lines(analysis, form_json)
+
+        def build_prompt(white_cut_out: bool) -> str:
+            return compile_chamak_prompt_v3(
+                analysis, form_json, note_text, slider_lines, template,
+                wildness, structure, transparent, white_cut_out,
+            )
+
+        compiled_prompt = build_prompt(white_cut_out=two_step)
+        fallback_prompt = build_prompt(white_cut_out=False) if two_step else None
         prompt_version = settings.CHAMAK_OPENAI_PROMPT_VERSION + "".join(
             f"+{part}" for part in (
                 f"w{wildness}" if wildness is not None else None,
                 f"s{structure}" if structure is not None else None,
-                "bg-t" if transparent else None,
+                ("bg-bf" if two_step else "bg-t") if transparent else None,
                 template_label,
             ) if part
         )
@@ -731,7 +764,7 @@ async def run_stage4_generation_openai(
         results = await asyncio.gather(*(
             _render_openai(
                 [(img1_bytes, img1_mime), (img2_bytes, img2_mime)],
-                compiled_prompt, size, transparent, generation_id,
+                compiled_prompt, size, transparent, generation_id, fallback_prompt,
             )
             for _ in range(count)
         ), return_exceptions=True)

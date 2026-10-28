@@ -427,6 +427,16 @@ TRANSPARENT_BACKGROUND = """TRANSPARENT BACKGROUND (this overrides BACKGROUND AN
 - Edges are crisp and clean all around the piece, including fine chains, drops and the gaps inside open work, so the cut-out can be placed on any background.
 - The lighting stays as described: neutral white, never changing the colour of the metal."""
 
+# The same cut-out instructions for the two-step cut-out (app.services.cutout):
+# gpt-image-2 renders on plain white, then the background is removed here.
+WHITE_CUT_OUT_BACKGROUND = TRANSPARENT_BACKGROUND.replace(
+    "TRANSPARENT BACKGROUND (", "PLAIN WHITE BACKGROUND FOR CUT-OUT ("
+).replace(
+    "- The background is fully transparent: no colour, no velvet, no surface, no floor, no shadow and no reflection beneath the piece.",
+    "- The background is one perfectly even, plain, pure white (#FFFFFF) from edge to edge: no velvet, no surface, no floor, no gradient, no shadow and no reflection beneath the piece. The piece will be cut out of this background, so it is clearly separated from it on every side.",
+)
+assert WHITE_CUT_OUT_BACKGROUND.count("pure white (#FFFFFF)") == 1
+
 
 def _chip_lines(raw: Any) -> list[str]:
     if not isinstance(raw, list):
@@ -541,6 +551,7 @@ def compile_chamak_prompt_v3(
     wildness: Optional[int] = None,
     structure: Optional[int] = None,
     transparent: bool = False,
+    white_cut_out: bool = False,
 ) -> str:
     analysis = analysis or {}
     form_input = form_input or {}
@@ -570,7 +581,9 @@ def compile_chamak_prompt_v3(
     values["CROSS_TYPE"] = _fill(CROSS_TYPE, values) if module_2 != module_1 else ""
     values["WILDNESS"] = _fill(_wildness_block(wildness), values) if wildness is not None else ""
     values["STRUCTURE"] = _fill(_structure_block(structure), values) if structure is not None else ""
-    values["BACKGROUND_MODE"] = TRANSPARENT_BACKGROUND if transparent else ""
+    values["BACKGROUND_MODE"] = (
+        (WHITE_CUT_OUT_BACKGROUND if white_cut_out else TRANSPARENT_BACKGROUND) if transparent else ""
+    )
 
     img1 = analysis.get("image1_strengths") or []
     img2 = analysis.get("image2_strengths") or []
