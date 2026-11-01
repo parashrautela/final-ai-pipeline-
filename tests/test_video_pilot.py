@@ -462,6 +462,31 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await self.http.get(path,headers=self.headers(OTHER))).status_code,404)
             self.assertEqual((await self.http.post("/api/videos/"+job["id"]+"/cancel",headers=self.headers(OTHER))).status_code,404)
 
+    async def test_all_accounts_mode_still_requires_authentication_and_ownership(self):
+        with patch.object(settings,"VIDEO_PILOT_USER_IDS","*"):
+            path=f"/api/videos/products/{PRODUCT}/options"
+            self.assertEqual((await self.http.get(path)).status_code,401)
+            self.assertEqual((await self.http.get(path,headers=self.headers(OTHER))).status_code,404)
+            self.database.execute("UPDATE products SET wholesaler_id=%s",(OTHER,))
+            self.assertEqual((await self.http.get(path,headers=self.headers(OTHER))).status_code,200)
+            payload={"product_id":PRODUCT}
+            quoted=await self.http.post("/api/videos/quote",json=payload,headers=self.headers(OTHER))
+            self.assertEqual(quoted.status_code,200)
+            generated=await self.http.post("/api/videos/generate",json={**payload,"quote_hash":quoted.json()["quote_hash"]},headers=self.headers(OTHER,key=str(uuid4())))
+            self.assertEqual(generated.status_code,202)
+            self.assertEqual((await self.http.get("/api/videos/"+generated.json()["id"],headers=self.headers())).status_code,404)
+            self.assertEqual(self.count_posts(),0)
+
+    async def test_all_accounts_mode_keeps_feature_and_paid_generation_switches(self):
+        with patch.object(settings,"VIDEO_PILOT_USER_IDS","*"):
+            payload,quote=await self.quotation()
+            with patch.object(settings,"VIDEO_ALLOW_PAID_GENERATION",False):
+                generated=await self.http.post("/api/videos/generate",json={**payload,"quote_hash":quote["quote_hash"]},headers=self.headers(key=str(uuid4())))
+                self.assertEqual(generated.status_code,403)
+            with patch.object(settings,"VIDEO_ENABLED",False):
+                self.assertEqual((await self.http.get(f"/api/videos/products/{PRODUCT}/options",headers=self.headers())).status_code,403)
+            self.assertEqual(self.count_posts(),0)
+
     async def test_raw_upload_and_pending_generation_cannot_start_video(self):
         self.database.execute("UPDATE products SET generated_image_urls='[]',ai_processing_state='pending'")
         options=await self.http.get(f"/api/videos/products/{PRODUCT}/options",headers=self.headers())

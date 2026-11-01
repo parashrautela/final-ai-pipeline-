@@ -58,7 +58,7 @@ async def pilot_user(authorization: str | None = Header(default=None)) -> str:
     if not user_id:
         raise HTTPException(401,"Sign in to create a video.")
     allowed = {value.strip().lower() for value in settings.VIDEO_PILOT_USER_IDS.split(",") if value.strip()}
-    if not settings.VIDEO_ENABLED or str(user_id).lower() not in allowed:
+    if not settings.VIDEO_ENABLED or ("*" not in allowed and str(user_id).lower() not in allowed):
         raise HTTPException(403,"Video conversion is not enabled for this account yet.")
     return str(user_id)
 

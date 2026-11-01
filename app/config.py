@@ -250,7 +250,7 @@ class Settings(BaseSettings):
     # is deliberately separate from this provider-unit budget.
     VIDEO_ENABLED: bool = False
     VIDEO_ALLOW_PAID_GENERATION: bool = False
-    VIDEO_PILOT_USER_IDS: str = ""
+    VIDEO_PILOT_USER_IDS: str = ""  # "*" explicitly enables all authenticated accounts.
     KLING_API_KEY: str = ""
     VIDEO_MODEL: str = "kling-3.0"
     VIDEO_BUDGET_KEY: str = "general-video-trial"

@@ -76,8 +76,10 @@ later be configured with `VIDEO_SHOT_1_PREVIEW_URL`/`VIDEO_SHOT_2_PREVIEW_URL`.
 
 ## API contract
 
-All endpoints require a real Supabase bearer token and an explicitly allowlisted
-pilot user, even when the old image-credit feature is turned off.
+All endpoints require a real Supabase bearer token, even when the old image-credit
+feature is turned off. `VIDEO_PILOT_USER_IDS` accepts selected UUIDs or an explicit
+`*` for all authenticated accounts. Ownership checks always remain enforced.
+All users share the configured provider-unit budget; no image wallets are debited.
 
 | Method/path | Purpose |
 | --- | --- |
@@ -180,7 +182,7 @@ this workspace's `.venv`; they are not new production dependencies.
 .venv/bin/python -m pytest tests/test_video_pilot.py -q
 ```
 
-Latest local verification: **95 passing tests**, covering the video pilot plus
+Latest local verification: **97 passing tests**, covering the video pilot plus
 existing reprocess/image-count, Chamak prompt and analysis-failure regressions.
 Video checks include real PostgreSQL concurrency/permissions, authentication,
 image prerequisites, both presets, quote invalidation, unit reservations,
@@ -229,11 +231,14 @@ branch. Apply only migration 037 to the linked Supabase project, then deploy the
 backend commit; do not run all historical migrations. This additive migration
 creates only the video ledger/functions and private video bucket/policy.
 
-Keep `VIDEO_ENABLED=false` and `VIDEO_ALLOW_PAID_GENERATION=false` for this rollout.
+The initial deployment used `VIDEO_ENABLED=false` and
+`VIDEO_ALLOW_PAID_GENERATION=false`. Enabling actual generation requires both true.
 No Kling key is needed for a disabled deployment. `/health` exposes the video API
 availability and both switches without exposing credentials. Paid generation
 requires a later deliberate configuration change, pilot-user allowlist, backend
-secret and confirmed pack expiry. The frontend remains a separate step.
+secret and confirmed pack expiry. The user subsequently authorized all-account
+access through `VIDEO_PILOT_USER_IDS=*`, sharing the existing 100-unit pack and
+its actual expiry. The native iPad flow is implemented in the separate iOS repo.
 
 Rollback the Railway deployment to the preceding healthy release if health or
 existing image routes regress. The additive schema can remain; both switches off
