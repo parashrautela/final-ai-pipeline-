@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import hashlib
+import math
 from datetime import datetime, timezone
 
 from app.config import settings
@@ -58,7 +59,8 @@ async def process_attempt(job: dict, client: KlingClient):
                 await db.update(job,{**patch,"status":"generating","poll_after":5})
         elif state == "succeeded":
             outputs = [item for item in task.get("outputs",[]) if item.get("type") == "video"]
-            if len(outputs) != 1 or float(outputs[0].get("duration",0)) != job["duration"]:
+            # Encoded frame timing can add a fraction of a second (e.g. 5.041s).
+            if len(outputs) != 1 or not math.isclose(float(outputs[0].get("duration",0)),job["duration"],rel_tol=0,abs_tol=0.1):
                 raise ValueError("Unexpected video output or duration.")
             # Preserve the lease through download/upload. A crash resumes saving,
             # querying the same task for a fresh output URL, never regenerating.

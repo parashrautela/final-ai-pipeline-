@@ -182,7 +182,7 @@ this workspace's `.venv`; they are not new production dependencies.
 .venv/bin/python -m pytest tests/test_video_pilot.py -q
 ```
 
-Latest local verification: **97 passing tests**, covering the video pilot plus
+Latest local verification: **99 passing tests**, covering the video pilot plus
 existing reprocess/image-count, Chamak prompt and analysis-failure regressions.
 Video checks include real PostgreSQL concurrency/permissions, authentication,
 image prerequisites, both presets, quote invalidation, unit reservations,

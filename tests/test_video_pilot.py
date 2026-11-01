@@ -332,6 +332,7 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
         self.upload_failures=0
         self.provider_calls=[]
         self.provider_state="succeeded"
+        self.output_duration=5
         self.submit_timeout=False
         self.query_missing=False
         self.query_failure=False
@@ -397,7 +398,7 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
         if not external:
             external=next((key for key,value in self.tasks.items() if value==request.url.params.get("task_ids")),None)
         data=[] if not external or external not in self.tasks else [{"id":self.tasks[external],"external_id":external,"status":self.provider_state,
-            "outputs":[{"type":"video","url":"https://v16.klingai.com/video.mp4","duration":5}],
+            "outputs":[{"type":"video","url":"https://v16.klingai.com/video.mp4","duration":self.output_duration}],
             "billing":[] if self.reported_units is None else [{"charge_type":"unit","package_type":"video","amount":self.reported_units}]}]
         return httpx.Response(200,json={"code":0,"data":data})
 
@@ -588,6 +589,30 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["status"],"needs_review")
         self.assertEqual((await db.budget())["accounted_units"],4)
         self.assertEqual(self.count_posts(),0)
+
+    async def test_encoded_frame_timing_does_not_block_saving(self):
+        for requested,actual,charge in ((5,"5.041","4"),(10,"10.041","8")):
+            self.output_duration=actual
+            self.reported_units=charge
+            job,_,_=await self.generate(duration=requested)
+            await self.tick()
+            await self.tick()
+            stored=await db.find(OWNER,job_id=job["id"])
+            self.assertEqual(stored["status"],"ready")
+            self.assertEqual(stored["billed_units"],float(charge))
+        self.assertEqual(self.count_posts(),2)
+
+    async def test_incorrect_or_nonfinite_output_duration_still_needs_review(self):
+        for actual in ("5.5","10","NaN","Infinity","invalid"):
+            self.output_duration=actual
+            job,_,_=await self.generate()
+            await self.tick()
+            await self.tick()
+            stored=await db.find(OWNER,job_id=job["id"])
+            self.assertEqual(stored["status"],"needs_review")
+            self.assertEqual(stored["accounted_units"],4)
+            self.database.execute("DELETE FROM video_generations WHERE id=%s",(job["id"],))
+        self.assertEqual(self.count_posts(),5)
 
     async def test_save_failure_retries_saving_and_keeps_original_source(self):
         job,_,_=await self.generate()
