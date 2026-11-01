@@ -67,6 +67,7 @@ from app.validation import (
 from app.worker import worker_loop
 from app.routers.catalogue_search import router as catalogue_search_router
 from app.routers.manufacturing import router as manufacturing_router
+from app.routers.videos import router as videos_router
 from app.services.manufacturing_scheduler import scheduler as manufacturing_scheduler
 
 # Rate limiter keyed on client IP. Each route sets its own cap;
@@ -100,6 +101,10 @@ async def lifespan(app: FastAPI):
     # Start the background worker as soon as the server is ready.
     # On shutdown, cancel it cleanly instead of letting it hang.
     task = asyncio.create_task(worker_loop())
+    video_task = None
+    if settings.VIDEO_ENABLED and settings.VIDEO_ALLOW_PAID_GENERATION and settings.KLING_API_KEY and settings.VIDEO_PILOT_USER_IDS.strip():
+        from app.services.video_pipeline import worker_loop as video_worker_loop
+        video_task = asyncio.create_task(video_worker_loop())
     # One-off catch-up for images stored before they had small copies. Costs a
     # single query once everything has been converted.
     catch_up = asyncio.create_task(backfill_on_startup())
@@ -109,6 +114,9 @@ async def lifespan(app: FastAPI):
     yield
     await manufacturing_scheduler.stop()
     await stop_image_search()
+    if video_task:
+        video_task.cancel()
+        await asyncio.gather(video_task, return_exceptions=True)
     task.cancel()
     catch_up.cancel()
     try:
@@ -120,6 +128,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.include_router(catalogue_search_router)
 app.include_router(manufacturing_router)
+app.include_router(videos_router)
 
 app.state.limiter = limiter
 # slowapi needs this handler registered so it returns a proper 429 JSON body
@@ -427,6 +436,11 @@ async def health_check(request: Request):
             "provider": "nanobananaapi.ai",
             "model": nanobana_client.MODEL,
             "resolution": nanobana_client.RESOLUTION,
+        },
+        "video_generation": {
+            "api_available": True,
+            "enabled": settings.VIDEO_ENABLED,
+            "paid_generation_enabled": settings.VIDEO_ALLOW_PAID_GENERATION,
         },
     }
 

@@ -246,6 +246,25 @@ class Settings(BaseSettings):
 
     # Chamak & OpenAI
     OPENAI_API_KEY: str = ""
+    # Video is an explicitly enabled, allowlisted pilot. Customer wallet pricing
+    # is deliberately separate from this provider-unit budget.
+    VIDEO_ENABLED: bool = False
+    VIDEO_ALLOW_PAID_GENERATION: bool = False
+    VIDEO_PILOT_USER_IDS: str = ""
+    KLING_API_KEY: str = ""
+    VIDEO_MODEL: str = "kling-3.0"
+    VIDEO_BUDGET_KEY: str = "general-video-trial"
+    VIDEO_BUDGET_UNITS: float = Field(default=100, gt=0, le=1000000, allow_inf_nan=False)
+    VIDEO_PACK_EXPIRES_AT: str = ""
+    VIDEO_MAX_CONCURRENT: int = Field(default=2, ge=1, le=5)
+    VIDEO_OUTPUT_BUCKET: str = "video-outputs"
+    VIDEO_LOCAL_REFERENCE_DIR: str = ".temp/video-references"
+    VIDEO_BASE_PROMPT: str = ""
+    VIDEO_GLOBAL_PROMPT: str = ""
+    VIDEO_SHOT_1_PROMPT: str = ""
+    VIDEO_SHOT_2_PROMPT: str = ""
+    VIDEO_SHOT_1_PREVIEW_URL: str = ""
+    VIDEO_SHOT_2_PREVIEW_URL: str = ""
     OPENAI_MODEL: str = "gpt-4o"
     CHAMAK_TABLE_NAME: str = "chamak_generations"
     CHAMAK_OUTPUT_BUCKET: str = "chamak-outputs"
