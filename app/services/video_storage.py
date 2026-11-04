@@ -54,8 +54,9 @@ async def upload(path: str, data: bytes, content_type: str):
     # The SQL migration creates this bucket privately; never create a public fallback.
     def store():
         storage = get_supabase().storage
-        bucket = storage.get_bucket(settings.VIDEO_OUTPUT_BUCKET)
-        if getattr(bucket,"public",None) is not False:
+        # shortcut: raw bucket JSON because storage3 0.11.3's get_bucket crashes on new fields (versioning_status); use get_bucket again after upgrading storage3.
+        bucket = storage._request("GET", f"/bucket/{settings.VIDEO_OUTPUT_BUCKET}").json()
+        if bucket.get("public") is not False:
             raise ValueError("Video source and output storage must be private.")
         storage.from_(settings.VIDEO_OUTPUT_BUCKET).upload(path,data,{"content-type":content_type,"upsert":"true"})
     await asyncio.to_thread(store)

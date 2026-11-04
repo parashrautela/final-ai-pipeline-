@@ -361,7 +361,7 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
                 for path in paths: self.assets.pop(path,None)
             return SimpleNamespace(download=download,upload=upload,create_signed_url=signed,remove=remove)
         storage.from_=bucket
-        storage.get_bucket=lambda name:SimpleNamespace(public=False)
+        storage._request=lambda method,url:SimpleNamespace(json=lambda:{"public":False,"versioning_status":None})
         self.patchers.append(patch.object(video_storage,"get_supabase",lambda:SimpleNamespace(storage=storage)))
         for patcher in self.patchers:
             patcher.start()
@@ -683,7 +683,7 @@ class PilotTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(response.json()["media_unavailable"])
             self.assertEqual(response.json()["status"],"queued")
         payload,q=await self.quotation()
-        storage=SimpleNamespace(get_bucket=lambda name:SimpleNamespace(public=True))
+        storage=SimpleNamespace(_request=lambda method,url:SimpleNamespace(json=lambda:{"public":True}))
         with patch.object(video_storage,"get_supabase",lambda:SimpleNamespace(storage=storage)):
             response=await self.http.post("/api/videos/generate",json={**payload,"quote_hash":q["quote_hash"]},headers=self.headers(key=str(uuid4())))
             self.assertEqual(response.status_code,503)

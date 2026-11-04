@@ -80,7 +80,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
                 upload=lambda path,data,options:self.assets.__setitem__(path,data),
                 create_signed_url=lambda path,ttl:{"signedURL":"https://studio-test.supabase.co/private/"+path})
         storage.from_=bucket
-        storage.get_bucket=lambda name:SimpleNamespace(public=False)
+        storage._request=lambda method,url:SimpleNamespace(json=lambda:{"public":False,"versioning_status":None})
         patches=[patch.multiple(settings,ENVIRONMENT="test",VIDEO_STUDIO_ENABLED=True,VIDEO_STUDIO_USER_IDS=f"{OWNER},{OTHER}",VIDEO_STUDIO_RENDER_MODE="mock",
             VIDEO_STUDIO_ALLOW_OPENAI=False,SUPABASE_URL="https://studio-test.supabase.co",
             SUPABASE_JWT_SECRET="offline-studio-tests-only-secret-value",CREDITS_ENABLED=False),
