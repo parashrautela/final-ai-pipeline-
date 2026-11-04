@@ -6,7 +6,7 @@ Provider constraint checked against [official OpenAI documentation](https://deve
 
 ## Availability and authentication
 
-All routes use `/api/video-studio`, a Supabase bearer token, product ownership and a separate `VIDEO_STUDIO_ENABLED=false` default. The new routes run only in development/test. `VIDEO_STUDIO_RENDER_MODE=mock` produces visibly labelled development images without inference. OpenAI rendering additionally requires `VIDEO_STUDIO_ALLOW_OPENAI=true`, `VIDEO_STUDIO_RENDER_MODE=openai` and a configured server key. No other image/video provider is used. These settings are not changed by this implementation.
+All routes use `/api/video-studio`, a Supabase bearer token, product ownership and a separate `VIDEO_STUDIO_ENABLED=false` default. Only accounts listed in `VIDEO_STUDIO_USER_IDS` (comma-separated auth user ids) may use the routes; the list is empty by default. `VIDEO_STUDIO_RENDER_MODE=mock` produces visibly labelled development images without inference. OpenAI rendering additionally requires `VIDEO_STUDIO_ALLOW_OPENAI=true`, `VIDEO_STUDIO_RENDER_MODE=openai` and a configured server key. No other image/video provider is used. These settings are not changed by this implementation.
 
 ## Endpoints
 

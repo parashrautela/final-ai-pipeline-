@@ -81,7 +81,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
                 create_signed_url=lambda path,ttl:{"signedURL":"https://studio-test.supabase.co/private/"+path})
         storage.from_=bucket
         storage.get_bucket=lambda name:SimpleNamespace(public=False)
-        patches=[patch.multiple(settings,ENVIRONMENT="test",VIDEO_STUDIO_ENABLED=True,VIDEO_STUDIO_RENDER_MODE="mock",
+        patches=[patch.multiple(settings,ENVIRONMENT="test",VIDEO_STUDIO_ENABLED=True,VIDEO_STUDIO_USER_IDS=f"{OWNER},{OTHER}",VIDEO_STUDIO_RENDER_MODE="mock",
             VIDEO_STUDIO_ALLOW_OPENAI=False,SUPABASE_URL="https://studio-test.supabase.co",
             SUPABASE_JWT_SECRET="offline-studio-tests-only-secret-value",CREDITS_ENABLED=False),
             patch.object(api.limiter,"enabled",False),patch.object(db,"rpc",self.database.rpc),
@@ -130,7 +130,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
     async def test_auth_feature_environment_ownership_and_dynamic_sources(self):
         path=f"/api/video-studio/products/{PRODUCT}/options"
         self.assertEqual((await self.http.get(path)).status_code,401)
-        for attribute,value in (("VIDEO_STUDIO_ENABLED",False),("ENVIRONMENT","production")):
+        for attribute,value in (("VIDEO_STUDIO_ENABLED",False),("VIDEO_STUDIO_USER_IDS",""),("VIDEO_STUDIO_USER_IDS",OTHER)):
             with patch.object(settings,attribute,value):
                 self.assertEqual((await self.http.get(path,headers=self.headers())).status_code,403)
         self.assertEqual((await self.http.get(path,headers=self.headers(OTHER))).status_code,404)

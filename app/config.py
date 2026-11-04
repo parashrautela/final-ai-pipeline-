@@ -266,8 +266,9 @@ class Settings(BaseSettings):
     VIDEO_SHOT_2_PROMPT: str = ""
     VIDEO_SHOT_1_PREVIEW_URL: str = ""
     VIDEO_SHOT_2_PREVIEW_URL: str = ""
-    # Separate, local-only storyboard development. Never activates the video pilot.
+    # Storyboard studio, separate from the video pilot. Only listed accounts may use it (it spends OpenAI images).
     VIDEO_STUDIO_ENABLED: bool = False
+    VIDEO_STUDIO_USER_IDS: str = ""  # comma-separated auth user ids; empty = nobody
     VIDEO_STUDIO_RENDER_MODE: Literal["mock", "openai"] = "mock"
     VIDEO_STUDIO_ALLOW_OPENAI: bool = False
     OPENAI_MODEL: str = "gpt-4o"

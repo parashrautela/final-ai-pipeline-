@@ -1,4 +1,4 @@
-"""Local-only, versioned storyboard review. There is deliberately no video renderer."""
+"""Allowlisted, versioned storyboard review. There is deliberately no video renderer."""
 import copy
 from datetime import datetime, timezone
 from typing import Literal
@@ -99,8 +99,9 @@ async def studio_user(authorization: str | None=Header(default=None)) -> str:
     user=await resolve_user_id(authorization)
     if not user:
         raise HTTPException(401,"Sign in to use Video Studio.")
-    if not settings.VIDEO_STUDIO_ENABLED or settings.ENVIRONMENT not in {"development","test"}:
-        raise HTTPException(403,"Video Studio is available only in an enabled development environment.")
+    allowed={value.strip().lower() for value in settings.VIDEO_STUDIO_USER_IDS.split(",") if value.strip()}
+    if not settings.VIDEO_STUDIO_ENABLED or str(user).lower() not in allowed:
+        raise HTTPException(403,"Video Studio isn't enabled for this account.")
     return str(user)
 
 
