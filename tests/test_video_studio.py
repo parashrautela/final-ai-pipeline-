@@ -22,7 +22,8 @@ from app.config import settings
 from app.db import video_studio as db
 from app.routers import video_studio as api
 from app.services import video_studio as studio, video_storage
-from test_video_pilot import LocalDatabase, photo
+from app.db import videos as videos_db
+from test_video_pilot import EXPIRES, LocalDatabase, photo
 
 ROOT=Path(__file__).resolve().parents[1]
 OWNER="10000000-0000-4000-8000-000000000001"
@@ -42,6 +43,10 @@ class StudioDatabase(LocalDatabase):
 
     async def history(self,owner,product_id):
         rows=await asyncio.to_thread(self.execute,"SELECT * FROM video_studio_projects WHERE owner_id=%s AND product_id=%s ORDER BY created_at DESC LIMIT 50",(owner,product_id))
+        return [self.serial(row) for row in rows]
+
+    async def videos(self,owner,project_id):
+        rows=await asyncio.to_thread(self.execute,"SELECT * FROM video_generations WHERE owner_id=%s AND prompt_parts->>'studio_project_id'=%s ORDER BY created_at DESC",(owner,project_id))
         return [self.serial(row) for row in rows]
 
 
@@ -65,12 +70,14 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
                 generated_image_urls jsonb,ai_processing_state text);
             GRANT ALL ON products TO service_role;
         """)
+        cls.database.execute((ROOT/"migrations/037_video_generation_pilot.sql").read_text())
+        cls.database.execute((ROOT/"migrations/039_video_storyboard_shot.sql").read_text())
         migration=(ROOT/"migrations/038_video_studio.sql").read_text()
         cls.database.execute(migration)
         cls.database.execute(migration)
 
     async def asyncSetUp(self):
-        self.database.execute("TRUNCATE video_studio_requests,video_studio_projects,products")
+        self.database.execute("TRUNCATE video_studio_requests,video_studio_projects,video_generations,products")
         self.database.execute("INSERT INTO products VALUES(%s,%s,'Five-view necklace','necklace',%s,'ready')",
                               (PRODUCT,OWNER,Jsonb([BASE+f"{index}.png" for index in range(5)])))
         self.assets={"products/processed/"+f"{index}.png":photo() for index in range(5)}
@@ -83,7 +90,12 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         storage._request=lambda method,url:SimpleNamespace(json=lambda:{"public":False,"versioning_status":None})
         patches=[patch.multiple(settings,ENVIRONMENT="test",VIDEO_STUDIO_ENABLED=True,VIDEO_STUDIO_USER_IDS=f"{OWNER},{OTHER}",VIDEO_STUDIO_RENDER_MODE="mock",
             VIDEO_STUDIO_ALLOW_OPENAI=False,SUPABASE_URL="https://studio-test.supabase.co",
-            SUPABASE_JWT_SECRET="offline-studio-tests-only-secret-value",CREDITS_ENABLED=False),
+            SUPABASE_JWT_SECRET="offline-studio-tests-only-secret-value",CREDITS_ENABLED=False,
+            VIDEO_ENABLED=True,VIDEO_ALLOW_PAID_GENERATION=True,VIDEO_PILOT_USER_IDS=OWNER,KLING_API_KEY="offline-key",
+            VIDEO_MODEL="kling-3.0",VIDEO_BUDGET_KEY="studio-pack",VIDEO_BUDGET_UNITS=100,VIDEO_PACK_EXPIRES_AT=EXPIRES,
+            VIDEO_BASE_PROMPT="",VIDEO_GLOBAL_PROMPT=""),
+            patch.object(videos_db,"rpc",self.database.rpc),patch.object(videos_db,"find",self.database.find),
+            patch.object(db,"videos",self.database.videos),
             patch.object(api.limiter,"enabled",False),patch.object(db,"rpc",self.database.rpc),
             patch.object(db,"project",self.database.project),patch.object(db,"request",self.database.request),
             patch.object(db,"history",self.database.history),patch.object(db,"product",self.database.product),
@@ -136,7 +148,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.http.get(path,headers=self.headers(OTHER))).status_code,404)
         options=(await self.http.get(path,headers=self.headers())).json()
         self.assertEqual([item["index"] for item in options["images"]],[0,1,2,3,4])
-        self.assertEqual(options["supported_video_durations"],[])
+        self.assertEqual(options["supported_video_durations"],[5,10])
         project=await self.create()
         self.assertEqual([item["image_index"] for item in project["references"]],[4,0])
         self.assertEqual(project["references"][0]["role"],"main")
@@ -164,7 +176,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
     async def test_storyboard_approval_edits_invalidation_and_mock_video_rejection(self):
         project=await self.create()
         self.assertEqual((await self.action(project,"approve")).status_code,409)
-        self.assertEqual((await self.action(project,"video")).status_code,409)
+        self.assertEqual((await self.action(project,"video/quote")).status_code,409)
         rendered=await self.action(project,"storyboard")
         self.assertEqual(rendered.status_code,200,rendered.text)
         project=rendered.json()
@@ -175,7 +187,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         approved=(await self.action(project,"approve")).json()
         self.assertTrue(approved["approval_valid"])
         self.assertFalse(approved["live_video_approval_valid"])
-        blocked=await self.action(approved,"video")
+        blocked=await self.action(approved,"video/quote")
         self.assertEqual(blocked.json()["detail"]["error"],"MOCK_STORYBOARD_NOT_RENDERABLE")
         changed=await self.update(approved,duration=5)
         self.assertEqual(changed.status_code,200,changed.text)
@@ -284,9 +296,25 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(render.call_args.args[0][0][0],self.assets[stored["data"]["references"][0]["path"]])
             approved=(await self.action(rendered.json(),"approve")).json()
             self.assertFalse(approved["storyboard"]["is_mock"])
-            unavailable=await self.action(approved,"video")
-            self.assertEqual(unavailable.status_code,503)
-            self.assertEqual(unavailable.json()["detail"]["error"],"VIDEO_RENDERER_UNAVAILABLE")
+            self.assertTrue(approved["live_video_approval_valid"])
+            quote=await self.action(approved,"video/quote")
+            self.assertEqual(quote.status_code,200,quote.text)
+            quote=quote.json()
+            self.assertEqual(quote["shot_id"],"storyboard")
+            self.assertIn(approved["shots"][0]["direction"],quote["prompt"])
+            self.assertEqual(quote["source_sha256"],stored["data"]["references"][0]["sha256"])
+            path=f"/api/video-studio/projects/{project['id']}/video"
+            body={"expected_version":approved["version"],"quote_hash":quote["quote_hash"]}
+            stale=await self.http.post(path,json={**body,"quote_hash":"0"*64},headers=self.headers())
+            self.assertEqual(stale.status_code,409)
+            key=str(uuid4())
+            job=await self.http.post(path,json=body,headers=self.headers(key=key))
+            self.assertEqual(job.status_code,202,job.text)
+            self.assertEqual(job.json()["status"],"queued")
+            replay=await self.http.post(path,json=body,headers=self.headers(key=key))
+            self.assertEqual(replay.json()["id"],job.json()["id"])
+            listed=(await self.http.get(f"/api/video-studio/projects/{project['id']}/videos",headers=self.headers())).json()
+            self.assertEqual([item["id"] for item in listed["videos"]],[job.json()["id"]])
 
     async def test_crashed_or_unconfirmed_finish_remains_pending_without_resubmission(self):
         project=await self.create()
@@ -318,7 +346,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         stored=await self.database.project(OWNER,project["id"])
         stored["data"]["approval"]["storyboard_sha256"]="forged"
         self.database.execute("UPDATE video_studio_projects SET data=%s WHERE id=%s",(Jsonb(stored["data"]),project["id"]))
-        rejected=await self.action(approved,"video")
+        rejected=await self.action(approved,"video/quote")
         self.assertEqual(rejected.json()["detail"]["error"],"STORYBOARD_APPROVAL_REQUIRED")
 
     async def test_catalogue_changes_do_not_mutate_private_reference_snapshots(self):

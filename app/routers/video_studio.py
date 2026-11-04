@@ -1,5 +1,6 @@
-"""Allowlisted, versioned storyboard review. There is deliberately no video renderer."""
+"""Allowlisted, versioned storyboard review; approved storyboards render through the Kling pilot's jobs."""
 import copy
+import hashlib
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID, uuid4
@@ -11,8 +12,10 @@ from slowapi.util import get_remote_address
 
 from app.auth import resolve_user_id
 from app.config import settings
-from app.db import video_studio as db
-from app.services import video_studio as studio, video_storage
+from app.db import video_studio as db, videos as videos_db
+from app.routers import videos
+from app.services import video_prompts, video_studio as studio, video_storage
+from app.services.kling import units
 
 router=APIRouter(prefix="/api/video-studio",tags=["Video Studio development"])
 limiter=Limiter(key_func=get_remote_address)
@@ -93,6 +96,18 @@ class UpdateInput(Configuration):
     shots: list[ShotInput] | None=Field(default=None,min_length=9,max_length=9)
 
 
+class VideoQuoteInput(VersionInput):
+    model: Literal["kling-3.0","kling-2.5-turbo"] | None=None
+
+
+class VideoGenerateInput(VideoQuoteInput):
+    quote_hash: str=Field(pattern=r"^[a-f0-9]{64}$")
+
+
+def video_ready() -> bool:
+    return settings.VIDEO_ENABLED and settings.VIDEO_ALLOW_PAID_GENERATION and bool(settings.KLING_API_KEY)
+
+
 async def studio_user(authorization: str | None=Header(default=None)) -> str:
     if not authorization or not authorization.lower().startswith("bearer ") or not authorization[7:].strip():
         raise HTTPException(401,"Sign in to use Video Studio.")
@@ -148,9 +163,9 @@ async def public(project: dict, operation_status: str | None=None) -> dict:
             "active_operation_id":project.get("active_operation"),
             "pending_recovery_notice":"Pending or unconfirmed work is never automatically resubmitted. If it does not complete, an operator must reconcile the persisted operation before further edits." if project.get("active_operation") else None,
             "approval_valid":approved(project),"media_unavailable":unavailable,
-            "video_generation_available":False,"video_url":None,
-            "live_video_approval_valid":False,
-            "development_notice":"Storyboard development only. Mock assets are labelled. Final video rendering is unavailable."}
+            "video_generation_available":video_ready(),"video_url":None,
+            "live_video_approval_valid":approved(project) and not project["data"]["storyboard"]["is_mock"],
+            "development_notice":"Mock assets are labelled and cannot become videos. An approved real storyboard can be rendered with Kling."}
 
 
 def request_hash(action: str, project_id: str | None, payload: BaseModel) -> str:
@@ -241,9 +256,9 @@ async def options(request: Request, product_id: UUID, owner: str=Depends(studio_
     return {"product_id":str(product_id),"title":product.get("title") or "","category":kind,
             "placement":studio.PLACEMENTS.get(kind),"category_corrections":list(studio.PLACEMENTS) if kind=="other" else [],
             "images":studio.images(product),"max_references":2,"panel_count":9,"modes":["product_led","human_led"],
-            "planning_durations":[5,10],"timing_scope":"development_only","supported_video_durations":[],
+            "planning_durations":[5,10],"timing_scope":"video_duration","supported_video_durations":[5,10],
             "render_mode":settings.VIDEO_STUDIO_RENDER_MODE,"openai_rendering_enabled":settings.VIDEO_STUDIO_ALLOW_OPENAI,
-            "video_generation_available":False,"quote_available":False}
+            "video_generation_available":video_ready(),"quote_available":video_ready()}
 
 
 @router.post("/projects",status_code=201)
@@ -368,11 +383,64 @@ async def approve(project_id: UUID, payload: VersionInput, idempotency_key: UUID
     return await public(result["project"],result["operation_status"])
 
 
-@router.post("/projects/{project_id}/video")
-async def video(project_id: UUID, payload: VersionInput, owner: str=Depends(studio_user)):
-    project=await owned_project(str(project_id),owner)
+async def kling_job(project_id: str, payload: VideoQuoteInput, owner: str) -> tuple[dict,bytes]:
+    """Quote one Kling job for the current approved storyboard, in the pilot's job shape."""
+    project=await owned_project(project_id,owner)
     if project["version"]!=payload.expected_version or not approved(project):
         raise HTTPException(409,{"error":"STORYBOARD_APPROVAL_REQUIRED","message":"Approve the current storyboard version first."})
-    if project["data"]["storyboard"]["is_mock"]:
+    data=project["data"]
+    if data["storyboard"]["is_mock"]:
         raise HTTPException(409,{"error":"MOCK_STORYBOARD_NOT_RENDERABLE","message":"Mock storyboard approval is for development review only and cannot authorize a live video."})
-    raise HTTPException(503,{"error":"VIDEO_RENDERER_UNAVAILABLE","message":"The final video renderer and quotes are not integrated. No video was submitted."})
+    config=data["config"]
+    # Human-led films open on the approved wearing preview; product-led on the Main reference.
+    anchor=data["wearing"] if config["mode"]=="human_led" else data["references"][0]
+    model=payload.model or settings.VIDEO_MODEL
+    try:
+        cost=units(model,config["duration"])
+        composed=video_prompts.storyboard(config["category"],data["shots"],model)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
+    try:
+        image=await video_storage.read_snapshot(anchor["path"])
+    except Exception as exc:
+        raise HTTPException(503,"The approved storyboard's opening image could not be loaded. Please try again.") from exc
+    if hashlib.sha256(image).hexdigest()!=anchor["sha256"]:
+        raise HTTPException(409,"The approved opening image changed. Create and approve a new storyboard.")
+    quote={"product_id":project["product_id"],"source_image_url":f"video-studio://{project_id}/v{project['version']}",
+           "source_sha256":anchor["sha256"],"model":model,"duration":config["duration"],"shot_id":"storyboard",
+           "category":composed["category"],"category_inputs":{},"prompt":composed["prompt"],
+           "prompt_parts":{**composed["parts"],"studio_project_id":project_id,"studio_version":project["version"]},
+           "prompt_version":composed["version"],"multi_shot":False,"estimated_units":str(cost),
+           "resolution":"1080p","audio":"off","budget_key":settings.VIDEO_BUDGET_KEY}
+    quote["quote_hash"]=videos.fingerprint(quote)
+    return quote,image
+
+
+@router.post("/projects/{project_id}/video/quote")
+@limiter.limit("12/minute")
+async def video_quote(request: Request, project_id: UUID, payload: VideoQuoteInput, owner: str=Depends(studio_user),
+                      pilot: str=Depends(videos.pilot_user)):
+    result,_image=await kling_job(str(project_id),payload,owner)
+    return {**result,"budget":await videos_db.budget()}
+
+
+@router.post("/projects/{project_id}/video",status_code=202)
+@limiter.limit("6/minute")
+async def video(request: Request, project_id: UUID, payload: VideoGenerateInput, idempotency_key: UUID=Header(),
+                owner: str=Depends(studio_user), pilot: str=Depends(videos.pilot_user)):
+    key=str(idempotency_key)
+    request_hash=videos.fingerprint({"studio_project_id":str(project_id),**payload.model_dump(mode="json")})
+    previous=await videos.replay(owner,key,request_hash)
+    if previous:
+        return previous
+    expires=videos.paid_expiry()
+    prepared,image=await kling_job(str(project_id),payload,owner)
+    if prepared.pop("quote_hash")!=payload.quote_hash:
+        raise HTTPException(409,"The storyboard, prompt or price changed. Review a fresh quote before generating.")
+    return await videos.reserve(prepared,image,owner,key,request_hash,None,expires)
+
+
+@router.get("/projects/{project_id}/videos")
+async def project_videos(project_id: UUID, owner: str=Depends(studio_user)):
+    await owned_project(str(project_id),owner)
+    return {"videos":[await videos.public_job(job) for job in await db.videos(owner,str(project_id))]}

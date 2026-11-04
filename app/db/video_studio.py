@@ -17,6 +17,12 @@ async def request(owner_id: str, key: str):
     return rows[0] if rows else None
 
 
+async def videos(owner_id: str, project_id: str):
+    return await asyncio.to_thread(lambda: get_supabase().table("video_generations").select("*")
+                                  .eq("owner_id",owner_id).eq("prompt_parts->>studio_project_id",project_id)
+                                  .order("created_at",desc=True).limit(20).execute().data)
+
+
 async def history(owner_id: str, product_id: str):
     return await asyncio.to_thread(lambda: get_supabase().table("video_studio_projects").select("*")
                                   .eq("owner_id",owner_id).eq("product_id",product_id)

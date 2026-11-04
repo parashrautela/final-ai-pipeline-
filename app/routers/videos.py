@@ -173,15 +173,16 @@ async def quote(request: Request, payload: VideoInput, user_id: str = Depends(pi
     return {**result,"budget":await db.budget(),"customer_wallet_charged":False}
 
 
-@router.post("/generate",status_code=202)
-@limiter.limit("6/minute")
-async def generate(request: Request, payload: GenerateInput, idempotency_key: UUID = Header(), user_id: str = Depends(pilot_user)):
-    request_hash = fingerprint(payload.model_dump(mode="json"))
-    existing = await db.find(user_id,key=str(idempotency_key))
-    if existing:
-        if existing["request_hash"] != request_hash:
-            raise HTTPException(409,"This request key was already used with different settings.")
-        return await public_job(existing)
+async def replay(user_id: str, key: str, request_hash: str) -> dict | None:
+    existing = await db.find(user_id,key=key)
+    if not existing:
+        return None
+    if existing["request_hash"] != request_hash:
+        raise HTTPException(409,"This request key was already used with different settings.")
+    return await public_job(existing)
+
+
+def paid_expiry() -> datetime:
     if not settings.VIDEO_ALLOW_PAID_GENERATION:
         raise HTTPException(403,"Paid video generation is disabled. You can review settings and quotes without spending units.")
     if not settings.KLING_API_KEY:
@@ -194,9 +195,12 @@ async def generate(request: Request, payload: GenerateInput, idempotency_key: UU
         raise HTTPException(503,"Configure the purchased resource pack's expiry, including its timezone.") from exc
     if expires <= datetime.now(timezone.utc):
         raise HTTPException(409,"The configured video resource pack has expired.")
-    prepared,image = await prepare(payload,user_id)
-    if prepared.pop("quote_hash") != payload.quote_hash:
-        raise HTTPException(409,"The image, prompt or price changed. Review a fresh quote before generating.")
+    return expires
+
+
+async def reserve(prepared: dict, image: bytes, user_id: str, key: str, request_hash: str,
+                  parent_id: str | None, expires: datetime) -> dict:
+    """Snapshot the source and reserve units for one queued Kling job (shared with the storyboard studio)."""
     available = await db.budget()
     if float(available["available_units"]) < float(prepared["estimated_units"]):
         raise HTTPException(402,"There are not enough unreserved trial units for this video.")
@@ -205,8 +209,8 @@ async def generate(request: Request, payload: GenerateInput, idempotency_key: UU
         source_path = await video_storage.snapshot(job_id,user_id,image)
     except Exception as exc:
         raise HTTPException(503,"The source image could not be saved privately. No generation was submitted.") from exc
-    job = {**prepared,"id":job_id,"owner_id":user_id,"parent_id":str(payload.parent_id) if payload.parent_id else None,
-           "idempotency_key":str(idempotency_key),"request_hash":request_hash,"source_path":source_path}
+    job = {**prepared,"id":job_id,"owner_id":user_id,"parent_id":parent_id,
+           "idempotency_key":key,"request_hash":request_hash,"source_path":source_path}
     try:
         result = await db.rpc("video_reserve",{"p_job":job,"p_limit":settings.VIDEO_BUDGET_UNITS,"p_expires":expires.isoformat()})
     except Exception as exc:
@@ -225,6 +229,21 @@ async def generate(request: Request, payload: GenerateInput, idempotency_key: UU
         status,message = errors[result["error"]]
         raise HTTPException(status,message)
     return await public_job(result)
+
+
+@router.post("/generate",status_code=202)
+@limiter.limit("6/minute")
+async def generate(request: Request, payload: GenerateInput, idempotency_key: UUID = Header(), user_id: str = Depends(pilot_user)):
+    request_hash = fingerprint(payload.model_dump(mode="json"))
+    previous = await replay(user_id,str(idempotency_key),request_hash)
+    if previous:
+        return previous
+    expires = paid_expiry()
+    prepared,image = await prepare(payload,user_id)
+    if prepared.pop("quote_hash") != payload.quote_hash:
+        raise HTTPException(409,"The image, prompt or price changed. Review a fresh quote before generating.")
+    return await reserve(prepared,image,user_id,str(idempotency_key),request_hash,
+                         str(payload.parent_id) if payload.parent_id else None,expires)
 
 
 @router.get("/products/{product_id}/history")

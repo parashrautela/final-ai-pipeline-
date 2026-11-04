@@ -112,3 +112,23 @@ def compose(raw_category: str, shot_id: str, inputs: dict[str, str], note: str =
         raise ValueError(f"The combined video prompt exceeds {PROMPT_LIMITS[model]:,} characters for {model}. Shorten the instructions.")
     version = "video-v3-" + hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:12]
     return {"category": kind, "inputs": values, "parts": parts, "prompt": prompt, "version": version,"multi_shot":multi_shot}
+
+
+def storyboard(raw_category: str, shots: list[dict], model: str) -> dict:
+    """An approved storyboard's timed panels become one continuous Kling shot plan."""
+    kind = category(raw_category)
+    if model not in PROMPT_LIMITS:
+        raise ValueError("Choose a supported video model.")
+    plan = "\n".join(f"{item['start_seconds']:.1f}-{item['end_seconds']:.1f}s: {item['direction']}" for item in shots)
+    parts = {
+        "base": settings.VIDEO_BASE_PROMPT.strip() or BASE,
+        "global": settings.VIDEO_GLOBAL_PROMPT.strip() or GLOBAL,
+        "category": CATEGORIES[kind],
+        "local": "Follow this approved storyboard in order as one continuous film with smooth transitions and no hard cuts. "
+                 "Keep the jewellery and its display or wearer stationary.\n" + plan,
+    }
+    prompt = "\n\n".join(f"{key.upper()}: {value}" for key, value in parts.items())
+    if len(prompt) > PROMPT_LIMITS[model]:
+        raise ValueError(f"The shot directions are too long for {model}. Shorten them and approve a new storyboard.")
+    version = "video-storyboard-v1-" + hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:12]
+    return {"category": kind, "parts": parts, "prompt": prompt, "version": version}
