@@ -1,4 +1,5 @@
 import logging
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
@@ -265,6 +266,10 @@ class Settings(BaseSettings):
     VIDEO_SHOT_2_PROMPT: str = ""
     VIDEO_SHOT_1_PREVIEW_URL: str = ""
     VIDEO_SHOT_2_PREVIEW_URL: str = ""
+    # Separate, local-only storyboard development. Never activates the video pilot.
+    VIDEO_STUDIO_ENABLED: bool = False
+    VIDEO_STUDIO_RENDER_MODE: Literal["mock", "openai"] = "mock"
+    VIDEO_STUDIO_ALLOW_OPENAI: bool = False
     OPENAI_MODEL: str = "gpt-4o"
     CHAMAK_TABLE_NAME: str = "chamak_generations"
     CHAMAK_OUTPUT_BUCKET: str = "chamak-outputs"

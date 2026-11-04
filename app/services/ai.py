@@ -392,6 +392,7 @@ class OpenAIImageClient:
         size: str | None = None,
         background: str | None = None,
         model: str | None = None,
+        max_retries: int | None = None,
     ) -> bytes:
         """Blend several reference images into ONE new image.
 
@@ -451,7 +452,7 @@ class OpenAIImageClient:
                 headers=self._headers,
                 files=files,
                 data=form,
-                max_retries=settings.MAX_RETRIES,
+                max_retries=settings.MAX_RETRIES if max_retries is None else max_retries,
             )
             payload = response.json()
 

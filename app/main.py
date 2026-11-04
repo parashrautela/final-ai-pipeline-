@@ -68,6 +68,7 @@ from app.worker import worker_loop
 from app.routers.catalogue_search import router as catalogue_search_router
 from app.routers.manufacturing import router as manufacturing_router
 from app.routers.videos import router as videos_router
+from app.routers.video_studio import router as video_studio_router
 from app.services.manufacturing_scheduler import scheduler as manufacturing_scheduler
 
 # Rate limiter keyed on client IP. Each route sets its own cap;
@@ -129,6 +130,7 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(catalogue_search_router)
 app.include_router(manufacturing_router)
 app.include_router(videos_router)
+app.include_router(video_studio_router)
 
 app.state.limiter = limiter
 # slowapi needs this handler registered so it returns a proper 429 JSON body
