@@ -114,21 +114,51 @@ def compose(raw_category: str, shot_id: str, inputs: dict[str, str], note: str =
     return {"category": kind, "inputs": values, "parts": parts, "prompt": prompt, "version": version,"multi_shot":multi_shot}
 
 
-def storyboard(raw_category: str, shots: list[dict], model: str) -> dict:
-    """An approved storyboard's timed panels become one continuous Kling shot plan."""
+def storyboard(raw_category: str, shots: list[dict], model: str, style: str = "simple", two_scenes: bool = False) -> dict:
+    """An approved storyboard's nine panels become three Kling beats: panels 1-3, 4-5 and 6-9.
+
+    `simple` is one continuous move (like reference option 1); `match_cut` is an
+    editorial edit with aligned hard cuts (like option 2). With `two_scenes` the
+    film opens on the first frame and closes on the supplied closing frame.
+    """
     kind = category(raw_category)
     if model not in PROMPT_LIMITS:
         raise ValueError("Choose a supported video model.")
-    plan = "\n".join(f"{item['start_seconds']:.1f}-{item['end_seconds']:.1f}s: {item['direction']}" for item in shots)
-    parts = {
-        "base": settings.VIDEO_BASE_PROMPT.strip() or BASE,
-        "global": settings.VIDEO_GLOBAL_PROMPT.strip() or GLOBAL,
-        "category": CATEGORIES[kind],
-        "local": "Follow this approved storyboard in order as one continuous film with smooth transitions and no hard cuts. "
-                 "Keep the jewellery and its display or wearer stationary.\n" + plan,
-    }
+    if style == "match_cut" and model != "kling-3.0":
+        raise ValueError("Fast cuts need Kling 3.0.")
+    duration = round(shots[-1]["end_seconds"])
+    if duration not in (5, 10):
+        raise ValueError("Choose a duration of 5 or 10 seconds.")
+    notes = [" ".join(item["direction"] for item in group) for group in (shots[:3], shots[3:5], shots[5:])]
+    ending = ("the same piece in the closing frame's scene, ending exactly on the closing frame" if two_scenes
+              else "the original full-piece framing")
+    if style == "match_cut":
+        segments = ([(3, f"Start exactly on the first frame; slow lateral track with an arc of at most 5 degrees. Storyboard: {notes[0]}"),
+                     (2, f"Clean cut to a macro of the most distinctive visible motif and stones, then a clean cut to {ending}. Storyboard: {notes[1]} {notes[2]}")]
+                    if duration == 5 else
+                    [(4, f"Start exactly on the first frame; slow lateral track with an arc of at most 5 degrees. Storyboard: {notes[0]}"),
+                     (3, f"Clean cut to a horizontal macro slide across the most distinctive visible motif and stones. Storyboard: {notes[1]}"),
+                     (3, f"Clean cut to {ending}; decelerate and hold the final moment. Storyboard: {notes[2]}")])
+        local = ("Editorial edit with clean instantaneous match cuts. At every cut the jewellery keeps the same position and size in frame. "
+                 "Keep the jewellery and its display stationary.\n" + "; ".join(f"shot {i}, {s}, {t}" for i, (s, t) in enumerate(segments, 1)) + ";")
+    else:
+        a, b = (2, 3.5) if duration == 5 else (4, 7)
+        local = ("One continuous camera move with no cuts. Keep the jewellery and its display stationary.\n"
+                 f"0-{a:g}s: Start exactly on the first frame; slow push-in with an arc of at most 5 degrees; the whole piece stays in frame. Storyboard: {notes[0]}\n"
+                 f"{a:g}-{b:g}s: Glide into a macro view of the most distinctive visible motif and stones"
+                 + (" until the background is fully out of focus" if two_scenes else "") + f". Storyboard: {notes[1]}\n"
+                 f"{b:g}-{duration}s: Pull back out of the macro to {ending}; hold the final moment. Storyboard: {notes[2]}")
+        if two_scenes:
+            local += "\nThe background changes only while it is out of focus; the jewellery never morphs, bends or changes."
+    base, global_rules = settings.VIDEO_BASE_PROMPT.strip() or BASE, settings.VIDEO_GLOBAL_PROMPT.strip() or GLOBAL
+    if two_scenes:
+        base = base.replace("Keep the original composition, background, display, props, palette and arrangement.",
+                            "Keep each supplied frame's composition, background, display, props, palette and arrangement.")
+        global_rules = global_rules.replace("Keep the same product, support and scene throughout.",
+                                            "Keep the same product throughout; the scene changes exactly once, as planned below.")
+    parts = {"base": base, "global": global_rules, "category": CATEGORIES[kind], "local": local}
     prompt = "\n\n".join(f"{key.upper()}: {value}" for key, value in parts.items())
     if len(prompt) > PROMPT_LIMITS[model]:
         raise ValueError(f"The shot directions are too long for {model}. Shorten them and approve a new storyboard.")
-    version = "video-storyboard-v1-" + hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:12]
-    return {"category": kind, "parts": parts, "prompt": prompt, "version": version}
+    version = "video-storyboard-v2-" + hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:12]
+    return {"category": kind, "parts": parts, "prompt": prompt, "version": version, "multi_shot": style == "match_cut"}

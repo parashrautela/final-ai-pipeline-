@@ -21,11 +21,18 @@ async def process_attempt(job: dict, client: KlingClient):
             image = await video_storage.read_snapshot(job["source_path"])
             if hashlib.sha256(image).hexdigest() != job["source_sha256"]:
                 raise ValueError("The saved source image changed.")
+            parts = job.get("prompt_parts") or {}
+            last_frame = None
+            if parts.get("last_frame_path"):
+                last_frame = await video_storage.read_snapshot(parts["last_frame_path"])
+                if hashlib.sha256(last_frame).hexdigest() != parts.get("last_frame_sha256"):
+                    raise ValueError("The saved closing frame changed.")
         except Exception:
             await db.update(job,{"status":"failed","error_code":"submission_rejected","message":"The saved source image could not be verified. No provider task was submitted."})
             return
         try:
-            task_id = await client.submit(job,base64.b64encode(image).decode())
+            task_id = await client.submit(job,base64.b64encode(image).decode(),
+                                          base64.b64encode(last_frame).decode() if last_frame else None)
         except SubmissionRejected as exc:
             await db.update(job,{"status":"failed","error_code":"submission_rejected","message":str(exc)})
             return

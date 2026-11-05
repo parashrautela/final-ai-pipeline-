@@ -171,6 +171,10 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(captured[0].content)["settings"]["audio"],"off")
             self.assertFalse(json.loads(captured[0].content)["settings"]["multi_shot"])
             self.assertNotIn("audio",json.loads(captured[1].content)["settings"])
+            await client.submit(self.job(),"aW1hZ2U=","ZW5k")
+            closing=json.loads(captured[-1].content)["contents"]
+            self.assertEqual([part["type"] for part in closing],["prompt","first_frame","last_frame"])
+            self.assertEqual(closing[-1]["url"],"ZW5k")
         finally: await client.close()
 
     async def test_timeout_and_server_error_never_retry_paid_post(self):

@@ -199,14 +199,25 @@ def paid_expiry() -> datetime:
 
 
 async def reserve(prepared: dict, image: bytes, user_id: str, key: str, request_hash: str,
-                  parent_id: str | None, expires: datetime) -> dict:
-    """Snapshot the source and reserve units for one queued Kling job (shared with the storyboard studio)."""
+                  parent_id: str | None, expires: datetime, last_frame: bytes | None = None) -> dict:
+    """Snapshot the source (and optional closing frame) and reserve units for one queued Kling job.
+
+    Shared with the storyboard studio. The closing frame's private path rides in
+    `prompt_parts` next to its quoted hash, so the worker can verify it.
+    """
     available = await db.budget()
     if float(available["available_units"]) < float(prepared["estimated_units"]):
         raise HTTPException(402,"There are not enough unreserved trial units for this video.")
     job_id = str(uuid4())
+    snapshots = []
     try:
         source_path = await video_storage.snapshot(job_id,user_id,image)
+        snapshots.append(source_path)
+        if last_frame is not None:
+            last_path = f"{user_id}/{job_id}/last_frame.png"
+            await video_storage.upload(last_path,last_frame,"image/png")
+            snapshots.append(last_path)
+            prepared = {**prepared,"prompt_parts":{**prepared["prompt_parts"],"last_frame_path":last_path}}
     except Exception as exc:
         raise HTTPException(503,"The source image could not be saved privately. No generation was submitted.") from exc
     job = {**prepared,"id":job_id,"owner_id":user_id,"parent_id":parent_id,
@@ -221,10 +232,11 @@ async def reserve(prepared: dict, image: bytes, user_id: str, key: str, request_
               "pack_expired":(409,"The video resource pack has expired."),
               "budget_exhausted":(402,"There are not enough unreserved trial units for this video.")}
     if result.get("error") or result["id"] != job_id:
-        try:
-            await video_storage.remove_snapshot(source_path)
-        except Exception:
-            logger.warning("Unused video source snapshot needs cleanup",extra={"video_id":job_id})
+        for path in snapshots:
+            try:
+                await video_storage.remove_snapshot(path)
+            except Exception:
+                logger.warning("Unused video source snapshot needs cleanup",extra={"video_id":job_id})
     if result.get("error") in errors:
         status,message = errors[result["error"]]
         raise HTTPException(status,message)

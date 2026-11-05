@@ -59,7 +59,7 @@ class KlingClient:
     async def close(self):
         await self.client.aclose()
 
-    async def submit(self, job: dict, image_base64: str) -> str:
+    async def submit(self, job: dict, image_base64: str, last_frame_base64: str | None = None) -> str:
         if not settings.VIDEO_ALLOW_PAID_GENERATION:
             raise SubmissionRejected("Paid video generation is disabled. No request was sent to Kling.")
         units(job["model"], job["duration"])
@@ -70,6 +70,8 @@ class KlingClient:
             "settings": {"resolution": "1080p", "duration": job["duration"]},
             "options": {"external_task_id": job["id"], "watermark_info": {"enabled": False}},
         }
+        if last_frame_base64:
+            body["contents"].append({"type": "last_frame", "url": last_frame_base64})
         if job["model"] == "kling-3.0":
             body["settings"].update(audio="off", multi_shot=job.get("multi_shot",False))
         try:

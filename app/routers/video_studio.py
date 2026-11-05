@@ -98,6 +98,7 @@ class UpdateInput(Configuration):
 
 class VideoQuoteInput(VersionInput):
     model: Literal["kling-3.0","kling-2.5-turbo"] | None=None
+    style: Literal["simple","match_cut"]="simple"
 
 
 class VideoGenerateInput(VideoQuoteInput):
@@ -383,7 +384,17 @@ async def approve(project_id: UUID, payload: VersionInput, idempotency_key: UUID
     return await public(result["project"],result["operation_status"])
 
 
-async def kling_job(project_id: str, payload: VideoQuoteInput, owner: str) -> tuple[dict,bytes]:
+async def verified_snapshot(item: dict) -> bytes:
+    try:
+        image=await video_storage.read_snapshot(item["path"])
+    except Exception as exc:
+        raise HTTPException(503,"The approved storyboard's images could not be loaded. Please try again.") from exc
+    if hashlib.sha256(image).hexdigest()!=item["sha256"]:
+        raise HTTPException(409,"An approved image changed. Create and approve a new storyboard.")
+    return image
+
+
+async def kling_job(project_id: str, payload: VideoQuoteInput, owner: str) -> tuple[dict,bytes,bytes | None]:
     """Quote one Kling job for the current approved storyboard, in the pilot's job shape."""
     project=await owned_project(project_id,owner)
     if project["version"]!=payload.expected_version or not approved(project):
@@ -394,33 +405,33 @@ async def kling_job(project_id: str, payload: VideoQuoteInput, owner: str) -> tu
     config=data["config"]
     # Human-led films open on the approved wearing preview; product-led on the Main reference.
     anchor=data["wearing"] if config["mode"]=="human_led" else data["references"][0]
+    # Product-led storyboards with two images use image 1 for panels 1-5 and image 2 for 6-9: the film closes on image 2.
+    closing=data["references"][1] if config["mode"]!="human_led" and len(data["references"])==2 else None
     model=payload.model or settings.VIDEO_MODEL
     try:
         cost=units(model,config["duration"])
-        composed=video_prompts.storyboard(config["category"],data["shots"],model)
+        composed=video_prompts.storyboard(config["category"],data["shots"],model,payload.style,closing is not None)
     except ValueError as exc:
         raise HTTPException(422,str(exc)) from exc
-    try:
-        image=await video_storage.read_snapshot(anchor["path"])
-    except Exception as exc:
-        raise HTTPException(503,"The approved storyboard's opening image could not be loaded. Please try again.") from exc
-    if hashlib.sha256(image).hexdigest()!=anchor["sha256"]:
-        raise HTTPException(409,"The approved opening image changed. Create and approve a new storyboard.")
+    image=await verified_snapshot(anchor)
+    last_frame=await verified_snapshot(closing) if closing else None
+    parts={**composed["parts"],"studio_project_id":project_id,"studio_version":project["version"],"style":payload.style}
+    if closing:
+        parts["last_frame_sha256"]=closing["sha256"]
     quote={"product_id":project["product_id"],"source_image_url":f"video-studio://{project_id}/v{project['version']}",
            "source_sha256":anchor["sha256"],"model":model,"duration":config["duration"],"shot_id":"storyboard",
            "category":composed["category"],"category_inputs":{},"prompt":composed["prompt"],
-           "prompt_parts":{**composed["parts"],"studio_project_id":project_id,"studio_version":project["version"]},
-           "prompt_version":composed["version"],"multi_shot":False,"estimated_units":str(cost),
-           "resolution":"1080p","audio":"off","budget_key":settings.VIDEO_BUDGET_KEY}
+           "prompt_parts":parts,"prompt_version":composed["version"],"multi_shot":composed["multi_shot"],
+           "estimated_units":str(cost),"resolution":"1080p","audio":"off","budget_key":settings.VIDEO_BUDGET_KEY}
     quote["quote_hash"]=videos.fingerprint(quote)
-    return quote,image
+    return quote,image,last_frame
 
 
 @router.post("/projects/{project_id}/video/quote")
 @limiter.limit("12/minute")
 async def video_quote(request: Request, project_id: UUID, payload: VideoQuoteInput, owner: str=Depends(studio_user),
                       pilot: str=Depends(videos.pilot_user)):
-    result,_image=await kling_job(str(project_id),payload,owner)
+    result,_image,_closing=await kling_job(str(project_id),payload,owner)
     return {**result,"budget":await videos_db.budget()}
 
 
@@ -434,10 +445,10 @@ async def video(request: Request, project_id: UUID, payload: VideoGenerateInput,
     if previous:
         return previous
     expires=videos.paid_expiry()
-    prepared,image=await kling_job(str(project_id),payload,owner)
+    prepared,image,last_frame=await kling_job(str(project_id),payload,owner)
     if prepared.pop("quote_hash")!=payload.quote_hash:
         raise HTTPException(409,"The storyboard, prompt or price changed. Review a fresh quote before generating.")
-    return await videos.reserve(prepared,image,owner,key,request_hash,None,expires)
+    return await videos.reserve(prepared,image,owner,key,request_hash,None,expires,last_frame)
 
 
 @router.get("/projects/{project_id}/videos")

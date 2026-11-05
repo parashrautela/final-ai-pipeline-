@@ -304,6 +304,14 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(quote["shot_id"],"storyboard")
             self.assertIn(approved["shots"][0]["direction"],quote["prompt"])
             self.assertEqual(quote["source_sha256"],stored["data"]["references"][0]["sha256"])
+            self.assertFalse(quote["multi_shot"])
+            self.assertIn("ending exactly on the closing frame",quote["prompt"])
+            self.assertEqual(quote["prompt_parts"]["last_frame_sha256"],stored["data"]["references"][1]["sha256"])
+            cuts=(await self.http.post(f"/api/video-studio/projects/{project['id']}/video/quote",
+                json={"expected_version":approved["version"],"style":"match_cut"},headers=self.headers())).json()
+            self.assertTrue(cuts["multi_shot"])
+            self.assertIn("match cuts",cuts["prompt"])
+            self.assertNotEqual(cuts["quote_hash"],quote["quote_hash"])
             path=f"/api/video-studio/projects/{project['id']}/video"
             body={"expected_version":approved["version"],"quote_hash":quote["quote_hash"]}
             stale=await self.http.post(path,json={**body,"quote_hash":"0"*64},headers=self.headers())
@@ -314,6 +322,9 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(job.json()["status"],"queued")
             replay=await self.http.post(path,json=body,headers=self.headers(key=key))
             self.assertEqual(replay.json()["id"],job.json()["id"])
+            row=await self.database.find(OWNER,job_id=job.json()["id"])
+            closing_path=row["prompt_parts"]["last_frame_path"]
+            self.assertEqual(self.assets[closing_path],self.assets[stored["data"]["references"][1]["path"]])
             listed=(await self.http.get(f"/api/video-studio/projects/{project['id']}/videos",headers=self.headers())).json()
             self.assertEqual([item["id"] for item in listed["videos"]],[job.json()["id"]])
 
