@@ -23,7 +23,7 @@ PLACEMENTS = {
 }
 PRESERVATION = (
     "These reference images show ONE existing jewellery product, never designs to blend. "
-    "Image 1 is the MAIN immutable product identity; another catalogue reference only clarifies the SAME product. "
+    "Image 1 is the MAIN immutable product identity; another catalogue reference shows the SAME product, possibly in another scene. "
     "Preserve visible product count, metal tone, stone count/colours/settings, silhouette, proportions, links and details. "
     "Never redesign, merge products, invent unseen geometry, duplicate jewellery or add other jewellery. "
     "Prefer views supported by the references. Product accuracy overrides style and motion."
@@ -36,7 +36,7 @@ def digest(value) -> str:
 
 def render_config() -> dict:
     return {"provider":settings.VIDEO_STUDIO_RENDER_MODE,"model":settings.OPENAI_IMAGE_MODEL,
-            "size":settings.OPENAI_IMAGE_SIZE,"prompt_version":"video-studio-v1"}
+            "size":settings.OPENAI_IMAGE_SIZE,"prompt_version":"video-studio-v2"}
 
 
 def category(raw: str) -> str:
@@ -101,6 +101,11 @@ def prompt(data: dict, kind: str) -> str:
         text+=("Create an adult human wearing only this supplied product, correctly placed "+config["placement"]+". "
                "Appearance selections are independent: "+json.dumps(human,ensure_ascii=False)+". "
                "Do not infer ethnicity from skin tone. Keep anatomy and jewellery attachment physically plausible. ")
+    elif len(data["references"]) == 2 and kind == "storyboard":
+        # Both chosen catalogue images are used: the film starts in Image 1's scene and moves to Image 2's.
+        text+=("Panels 1-5 use Image 1's product arrangement, scene, display, background and palette. "
+               "Panels 6-9 use Image 2's product arrangement, scene, display, background and palette. "
+               "The jewellery is the identical piece in all nine panels. No human or new body parts. ")
     else:
         text+="Retain the MAIN image's product arrangement, scene, display, background and palette. No human or new body parts. "
     if kind == "wearing":

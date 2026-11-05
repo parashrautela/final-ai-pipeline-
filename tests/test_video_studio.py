@@ -291,6 +291,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rendered.status_code,200,rendered.text)
             self.assertEqual(render.call_args.kwargs["max_retries"],0)
             self.assertIn("Image 1 is the MAIN",render.call_args.kwargs["prompt"])
+            self.assertIn("Panels 6-9 use Image 2's",render.call_args.kwargs["prompt"])
             self.assertEqual(len(render.call_args.args[0]),2)
             stored=await self.database.project(OWNER,project["id"])
             self.assertEqual(render.call_args.args[0][0][0],self.assets[stored["data"]["references"][0]["path"]])
