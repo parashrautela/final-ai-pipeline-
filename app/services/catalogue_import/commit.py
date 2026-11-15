@@ -25,8 +25,8 @@ from app.config import settings
 from app.db.repository import get_supabase
 from app.logging import logger
 from app.services.storage import public_url_for, upload_file_to_storage, download_from_storage
-from app.services.catalogue_import.photos import PhotoSummary, extract_photos_from_zip
-from app.services.catalogue_import.safe_fetch import validate_wholesaler_storage_path
+from app.services.catalogue_import.photos import PhotoSummary, extract_photos_from_zip, process_and_strip_exif
+from app.services.catalogue_import.safe_fetch import validate_wholesaler_storage_path, safe_fetch_image
 
 CHUNK_SIZE = 100
 
@@ -369,21 +369,22 @@ def _resolve_photo_urls(
     stored_photos: Optional[dict[str, tuple[bytes, str]]],
 ) -> tuple[Optional[str], list[str]]:
     """Upload photos to plant-images storage bucket and return (raw_image_url, [images])."""
-    if not photo_refs or not stored_photos:
+    if not photo_refs:
         return None, []
 
     import os
     photos_map: dict[str, tuple[bytes, str]] = {}
-    for k, v in stored_photos.items():
-        photos_map[k] = v
-        photos_map[k.lower()] = v
-        photos_map[k.strip()] = v
-        photos_map[k.strip().lower()] = v
-        base = os.path.basename(k)
-        photos_map[base] = v
-        photos_map[base.lower()] = v
-        photos_map[base.strip()] = v
-        photos_map[base.strip().lower()] = v
+    if stored_photos:
+        for k, v in stored_photos.items():
+            photos_map[k] = v
+            photos_map[k.lower()] = v
+            photos_map[k.strip()] = v
+            photos_map[k.strip().lower()] = v
+            base = os.path.basename(k)
+            photos_map[base] = v
+            photos_map[base.lower()] = v
+            photos_map[base.strip()] = v
+            photos_map[base.strip().lower()] = v
 
     main_url: Optional[str] = None
     extra_urls: list[str] = []
@@ -414,6 +415,25 @@ def _resolve_photo_urls(
                     extra_urls.append(pub_url)
             except Exception as exc:
                 logger.error(f"Failed to upload photo {ref} to plant-images: {exc}")
+        elif ref.lower().startswith("http://") or ref.lower().startswith("https://"):
+            try:
+                img_bytes, mime = safe_fetch_image(ref)
+                clean_bytes, clean_mime = process_and_strip_exif(img_bytes)
+                file_key = f"import_{job_id}_{uuid.uuid4().hex[:8]}.jpg"
+                storage_path = f"raw/{wholesaler_id}/{file_key}"
+                pub_url = upload_file_to_storage(
+                    clean_bytes, bucket="plant-images", path=storage_path, content_type=clean_mime
+                )
+                if idx == 0:
+                    main_url = pub_url
+                else:
+                    extra_urls.append(pub_url)
+            except Exception as exc:
+                logger.warning(f"Failed to fetch/upload URL photo {ref}: {exc}")
+                if idx == 0 and not main_url:
+                    main_url = ref
+                else:
+                    extra_urls.append(ref)
 
     return main_url, extra_urls
 
