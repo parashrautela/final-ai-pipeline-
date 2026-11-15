@@ -313,4 +313,112 @@ async def test_auto_profile_reuse_and_not_in_file_calculation():
     assert summary["conflict"] >= 2
 
 
+@pytest.mark.asyncio
+async def test_commit_conflict_resolutions_mine_and_sheet():
+    """Assert conflict resolution: 'mine' preserves current product attributes while updating snapshot,
+
+    while 'sheet' updates product attributes with incoming data."""
+    job_id = "job-conflict-res-test"
+    wid = "wholesaler-res-test"
+
+    job_mock = {
+        "id": job_id,
+        "wholesaler_id": wid,
+        "status": "ready",
+        "source_kind": "file",
+        "source_files": [],
+        "summary": {"conflict": 2},
+    }
+
+    # Two rows: code-1 resolved 'mine', code-2 resolved 'sheet'
+    row_mine = {
+        "id": 101,
+        "action": "conflict",
+        "resolution": "mine",
+        "product_code": "CODE1",
+        "normalized": {"title": "Sheet Title 1", "gross_weight": 5.0},
+        "photo_refs": [],
+    }
+    row_sheet = {
+        "id": 102,
+        "action": "conflict",
+        "resolution": "sheet",
+        "product_code": "CODE2",
+        "normalized": {"title": "Sheet Title 2", "gross_weight": 10.0},
+        "photo_refs": [],
+    }
+
+    existing_p1 = {
+        "id": "prod-1",
+        "product_code": "CODE1",
+        "title": "App Title 1",
+        "gross_weight": 9.99,
+        "import_snapshot": {"gross_weight": 4.0},
+        "ai_processing_state": "none",
+        "extra_attributes": {},
+    }
+    existing_p2 = {
+        "id": "prod-2",
+        "product_code": "CODE2",
+        "title": "App Title 2",
+        "gross_weight": 8.0,
+        "import_snapshot": {"gross_weight": 7.0},
+        "ai_processing_state": "none",
+        "extra_attributes": {},
+    }
+
+    mock_sb = MagicMock()
+    products_table = MagicMock()
+    rows_table = MagicMock()
+    jobs_table = MagicMock()
+
+    def get_table(name):
+        if name == "products":
+            return products_table
+        elif name == "catalogue_import_rows":
+            return rows_table
+        return jobs_table
+
+    mock_sb.table.side_effect = get_table
+
+    # Jobs table: fetch job & final job
+    jobs_table.select().eq().execute.return_value = MagicMock(data=[job_mock])
+    jobs_table.update().eq().execute.return_value = MagicMock(data=[])
+
+    # Products table: existing products
+    products_table.select().eq().execute.return_value = MagicMock(data=[existing_p1, existing_p2])
+
+    # Rows table: first chunk returns 2 rows, next returns empty
+    rows_table.select().eq().in_().is_().order().limit().execute.side_effect = [
+        MagicMock(data=[row_mine, row_sheet]),
+        MagicMock(data=[]),
+    ]
+    rows_table.update().eq().execute.return_value = MagicMock(data=[])
+
+    updated_products = {}
+    def mock_prod_update(payload):
+        mock_chain = MagicMock()
+        def mock_eq(col, val):
+            updated_products[val] = payload
+            return MagicMock(execute=MagicMock(return_value=MagicMock(data=[{"id": val}])))
+        mock_chain.eq = mock_eq
+        return mock_chain
+
+    products_table.update = mock_prod_update
+
+    with patch("app.services.catalogue_import.commit.get_supabase", return_value=mock_sb), \
+         patch("app.services.catalogue_import.commit._update_or_create_profile", new_callable=AsyncMock):
+        res = await commit_catalogue_import_job(job_id=job_id, wholesaler_id=wid, stored_photos={})
+
+    # Verify: prod-1 kept gross_weight=9.99, only snapshot was updated
+    assert "prod-1" in updated_products
+    assert "gross_weight" not in updated_products["prod-1"]  # Not overwritten
+    assert updated_products["prod-1"]["import_snapshot"]["gross_weight"] == 5.0
+
+    # Verify: prod-2 accepted sheet gross_weight=10.0
+    assert "prod-2" in updated_products
+    assert updated_products["prod-2"]["gross_weight"] == 10.0
+
+
+
 

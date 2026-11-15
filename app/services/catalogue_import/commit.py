@@ -17,13 +17,16 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
+import os
 from typing import Any, Optional
 import uuid
 
 from app.config import settings
 from app.db.repository import get_supabase
 from app.logging import logger
-from app.services.storage import public_url_for, upload_file_to_storage
+from app.services.storage import public_url_for, upload_file_to_storage, download_from_storage
+from app.services.catalogue_import.photos import PhotoSummary, extract_photos_from_zip
+from app.services.catalogue_import.safe_fetch import validate_wholesaler_storage_path
 
 CHUNK_SIZE = 100
 
@@ -74,6 +77,24 @@ async def commit_catalogue_import_job(
     for p in existing_res.data or []:
         if p.get("product_code"):
             existing_by_code[p["product_code"].strip().upper()] = p
+
+    # 2.5 Extract photos from uploaded zip or files if stored_photos not explicitly provided
+    if stored_photos is None:
+        stored_photos = {}
+        files = job.get("source_files") or []
+        zip_file = next((f for f in files if f.get("name", "").lower().endswith(".zip")), None)
+        if zip_file:
+            try:
+                zip_path = validate_wholesaler_storage_path(zip_file["path"], wholesaler_id)
+                zip_bytes = await asyncio.to_thread(download_from_storage, "catalogue-imports", zip_path)
+                if zip_bytes:
+                    dummy_summary = PhotoSummary()
+                    valid_photos = await asyncio.to_thread(extract_photos_from_zip, zip_bytes, dummy_summary)
+                    for vp in valid_photos:
+                        stored_photos[vp.filename] = (vp.clean_bytes, vp.mime_type)
+                        stored_photos[os.path.basename(vp.filename)] = (vp.clean_bytes, vp.mime_type)
+            except Exception as exc:
+                logger.error(f"Failed to extract photos during commit: {exc}", exc_info=exc)
 
     # 3. Handle images-only upload (source_kind='images_only')
     if job["source_kind"] == "images_only":
@@ -351,13 +372,36 @@ def _resolve_photo_urls(
     if not photo_refs or not stored_photos:
         return None, []
 
+    import os
+    photos_map: dict[str, tuple[bytes, str]] = {}
+    for k, v in stored_photos.items():
+        photos_map[k] = v
+        photos_map[k.lower()] = v
+        photos_map[k.strip()] = v
+        photos_map[k.strip().lower()] = v
+        base = os.path.basename(k)
+        photos_map[base] = v
+        photos_map[base.lower()] = v
+        photos_map[base.strip()] = v
+        photos_map[base.strip().lower()] = v
+
     main_url: Optional[str] = None
     extra_urls: list[str] = []
 
     for idx, ref in enumerate(photo_refs):
-        # ref can be filename or URL
-        if ref in stored_photos:
-            img_bytes, mime = stored_photos[ref]
+        base_ref = os.path.basename(ref)
+        hit = (
+            photos_map.get(ref)
+            or photos_map.get(ref.lower())
+            or photos_map.get(ref.strip())
+            or photos_map.get(ref.strip().lower())
+            or photos_map.get(base_ref)
+            or photos_map.get(base_ref.lower())
+            or photos_map.get(base_ref.strip())
+            or photos_map.get(base_ref.strip().lower())
+        )
+        if hit:
+            img_bytes, mime = hit
             file_key = f"import_{job_id}_{uuid.uuid4().hex[:8]}.jpg"
             storage_path = f"raw/{wholesaler_id}/{file_key}"
             try:
