@@ -100,31 +100,45 @@ else:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start the background worker as soon as the server is ready.
-    # On shutdown, cancel it cleanly instead of letting it hang.
-    task = asyncio.create_task(worker_loop())
+    import os
+    disable_workers = os.getenv("DISABLE_BACKGROUND_WORKERS", "").lower() in ("1", "true", "yes")
+
+    task = None
     video_task = None
-    if settings.VIDEO_ENABLED and settings.VIDEO_ALLOW_PAID_GENERATION and settings.KLING_API_KEY and settings.VIDEO_PILOT_USER_IDS.strip():
-        from app.services.video_pipeline import worker_loop as video_worker_loop
-        video_task = asyncio.create_task(video_worker_loop())
-    # One-off catch-up for images stored before they had small copies. Costs a
-    # single query once everything has been converted.
-    catch_up = asyncio.create_task(backfill_on_startup())
+    catch_up = None
+
+    if not disable_workers:
+        # Start the background worker as soon as the server is ready.
+        # On shutdown, cancel it cleanly instead of letting it hang.
+        task = asyncio.create_task(worker_loop())
+        if settings.VIDEO_ENABLED and settings.VIDEO_ALLOW_PAID_GENERATION and settings.KLING_API_KEY and settings.VIDEO_PILOT_USER_IDS.strip():
+            from app.services.video_pipeline import worker_loop as video_worker_loop
+            video_task = asyncio.create_task(video_worker_loop())
+        # One-off catch-up for images stored before they had small copies. Costs a
+        # single query once everything has been converted.
+        catch_up = asyncio.create_task(backfill_on_startup())
+        await manufacturing_scheduler.start()
+    else:
+        logger.info("DISABLE_BACKGROUND_WORKERS=1: Skipping background workers (manufacturing sweeps, outbox, backfill).")
+
     from app.routers.catalogue_search import startup as start_image_search, shutdown as stop_image_search
     await start_image_search()
-    await manufacturing_scheduler.start()
     yield
-    await manufacturing_scheduler.stop()
+    if not disable_workers:
+        await manufacturing_scheduler.stop()
     await stop_image_search()
     if video_task:
         video_task.cancel()
         await asyncio.gather(video_task, return_exceptions=True)
-    task.cancel()
-    catch_up.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        logger.info("Worker stopped.")
+    if task:
+        task.cancel()
+    if catch_up:
+        catch_up.cancel()
+    if task:
+        try:
+            await task
+        except asyncio.CancelledError:
+            logger.info("Worker stopped.")
 
 
 app = FastAPI(lifespan=lifespan)

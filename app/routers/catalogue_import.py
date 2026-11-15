@@ -161,10 +161,33 @@ async def read_job(
     if job["status"] in ("committing", "done"):
         raise HTTPException(status_code=400, detail="Cannot re-read a job that is already committing or completed.")
 
+    # Atomic claim: only one caller transitions the job from 'uploaded' or 'failed' to 'reading'
+    claim_res = (
+        sb.table("catalogue_import_jobs")
+        .update({"status": "reading"})
+        .eq("id", job_id)
+        .in_("status", ["uploaded", "failed"])
+        .execute()
+    )
+
+    if not claim_res.data:
+        # Another caller is already reading this job or has already read it.
+        # Do not touch the rows! Return current job status.
+        fresh_res = sb.table("catalogue_import_jobs").select("*").eq("id", job_id).execute()
+        cur_job = fresh_res.data[0] if fresh_res.data else job
+        logger.info(
+            f"Job {job_id} already claimed or processed (status: {cur_job.get('status')}). Skipping raw row ingestion."
+        )
+        return {
+            "job_id": job_id,
+            "status": cur_job.get("status", "reading"),
+            "sheets": [],
+            "row_count": 0,
+            "already_claimed": True,
+        }
+
     # Item 5: Delete any raw rows from an earlier read to ensure idempotency on re-read
     sb.table("catalogue_import_rows").delete().eq("job_id", job_id).execute()
-
-    sb.table("catalogue_import_jobs").update({"status": "reading"}).eq("id", job_id).execute()
 
     sheet_bytes = None
     sheet_name = "data.xlsx"
@@ -233,6 +256,9 @@ async def read_job(
         raise HTTPException(status_code=500, detail=f"Failed to read source file: {exc}")
 
 
+_analyze_locks: dict[str, asyncio.Lock] = {}
+
+
 @router.post("/jobs/{job_id}/analyze")
 async def analyze_job_endpoint(
     job_id: str,
@@ -240,7 +266,45 @@ async def analyze_job_endpoint(
 ):
     """Analyze headers and values, check profile, generate questions or build preview."""
     job = await get_owned_job(job_id, user_id)
-    return await _run_analyze_pipeline(job, user_id)
+
+    if job.get("status") in ("committing", "done"):
+        return {
+            "job_id": job_id,
+            "status": job["status"],
+            "summary": job.get("summary") or {},
+            "photo_summary": job.get("photo_summary") or {},
+            "questions": [],
+        }
+
+    if job.get("status") == "ready" and job.get("summary"):
+        return {
+            "job_id": job_id,
+            "status": "ready",
+            "summary": job.get("summary") or {},
+            "photo_summary": job.get("photo_summary") or {},
+            "questions": [],
+        }
+
+    lock = _analyze_locks.setdefault(job_id, asyncio.Lock())
+    async with lock:
+        fresh_job = await get_owned_job(job_id, user_id)
+        if fresh_job.get("status") in ("committing", "done"):
+            return {
+                "job_id": job_id,
+                "status": fresh_job["status"],
+                "summary": fresh_job.get("summary") or {},
+                "photo_summary": fresh_job.get("photo_summary") or {},
+                "questions": [],
+            }
+        if fresh_job.get("status") == "ready" and fresh_job.get("summary"):
+            return {
+                "job_id": job_id,
+                "status": "ready",
+                "summary": fresh_job.get("summary") or {},
+                "photo_summary": fresh_job.get("photo_summary") or {},
+                "questions": [],
+            }
+        return await _run_analyze_pipeline(fresh_job, user_id)
 
 
 @router.post("/jobs/{job_id}/answers")
@@ -540,14 +604,24 @@ async def commit_job_endpoint(
     job = await get_owned_job(job_id, user_id)
 
     if job["status"] == "done":
-        return {"status": "done", "summary": job.get("summary") or {}}
+        return {"job_id": job_id, "status": "done", "summary": job.get("summary") or {}}
 
-    if job["status"] not in ("ready", "committing"):
-        raise HTTPException(status_code=400, detail=f"Job cannot be committed in status '{job['status']}'.")
+    if job["status"] == "committing":
+        return {"job_id": job_id, "status": "committing", "message": "Commit already in progress."}
+
+    if job["status"] != "ready":
+        raise HTTPException(status_code=400, detail=f"Job cannot be committed in status '{job['status']}'. Must be 'ready'.")
 
     # Run commit
-    summary = await commit_catalogue_import_job(job_id, user_id)
-    return {"status": "done", "summary": summary}
+    try:
+        summary = await commit_catalogue_import_job(job_id, user_id)
+        return {"job_id": job_id, "status": "done", "summary": summary}
+    except Exception as exc:
+        logger.error(f"Commit error for job {job_id}: {exc}", exc_info=exc)
+        fresh = await get_owned_job(job_id, user_id)
+        if fresh.get("status") in ("committing", "done"):
+            return {"job_id": job_id, "status": fresh["status"], "summary": fresh.get("summary") or {}}
+        raise HTTPException(status_code=500, detail=f"Commit failed: {exc}")
 
 
 @router.get("/jobs/{job_id}")

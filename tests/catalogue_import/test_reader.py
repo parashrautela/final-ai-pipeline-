@@ -6,6 +6,7 @@ header row detection, total row exclusion, text/code formatting, encodings,
 delimiters, and size/row limits against the test fixtures.
 """
 
+import asyncio
 from pathlib import Path
 import pytest
 
@@ -270,16 +271,17 @@ async def test_read_endpoint_clears_prior_rows_and_blocks_done_job():
         assert exc_info.value.status_code == 400
         assert "Cannot re-read a job that is already committing or completed" in exc_info.value.detail
 
-    # 2. Re-reading an uploaded/read job deletes prior rows
+    # 2. Re-reading an uploaded/failed job deletes prior rows
     active_job = {
         "id": job_id,
         "wholesaler_id": user_id,
-        "status": "read",
+        "status": "uploaded",
         "source_kind": "file",
         "source_files": [{"name": "small.csv", "path": f"{user_id}/small.csv"}],
     }
     mock_sb = MagicMock()
     mock_sb.table().select().eq().execute.return_value = MagicMock(data=[active_job])
+    mock_sb.table().update().eq().in_().execute.return_value = MagicMock(data=[active_job])
 
     small_csv = b"Code,Title,Gross Wt\n101,Ring,5.0\n"
     with patch("app.routers.catalogue_import.get_owned_job", return_value=active_job), \
@@ -291,4 +293,109 @@ async def test_read_endpoint_clears_prior_rows_and_blocks_done_job():
         # Check delete was called on catalogue_import_rows for job_id
         mock_sb.table.assert_any_call("catalogue_import_rows")
         mock_sb.table("catalogue_import_rows").delete.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_read_calls_atomic_claim():
+    """Item 13: Concurrent /read calls on same job -> atomic claim prevents duplicate row inserts."""
+    from unittest.mock import MagicMock, patch
+    from app.routers.catalogue_import import read_job, analyze_job_endpoint
+
+    job_id = "22222222-2222-2222-2222-222222222222"
+    user_id = "fb20d512-d17b-4a3d-a793-9cce8a1eed5b"
+
+    csv_data = b"Code,Title,Gross Wt\n101,Ring,5.0\n102,Bangle,12.0\n"
+
+    # Simulate database state
+    job_record = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "uploaded",
+        "source_kind": "file",
+        "source_files": [{"name": "stock.csv", "path": f"{user_id}/stock.csv"}],
+        "answers": {},
+        "summary": {},
+    }
+
+    inserted_rows = []
+    claimed = False
+
+    def mock_table(table_name):
+        mock_tbl = MagicMock()
+        if table_name == "catalogue_import_jobs":
+            def mock_update(payload):
+                chain = MagicMock()
+                def mock_in_(field, vals):
+                    nonlocal claimed
+                    inner_chain = MagicMock()
+                    def mock_execute():
+                        nonlocal claimed
+                        if "status" in payload and payload["status"] == "reading":
+                            if not claimed and job_record["status"] in vals:
+                                claimed = True
+                                job_record["status"] = "reading"
+                                return MagicMock(data=[dict(job_record)])
+                            else:
+                                return MagicMock(data=[])
+                        return MagicMock(data=[dict(job_record)])
+                    inner_chain.execute = mock_execute
+                    return inner_chain
+                chain.eq.return_value.in_ = mock_in_
+                def direct_execute():
+                    job_record.update(payload)
+                    return MagicMock(data=[dict(job_record)])
+                chain.eq.return_value.execute = direct_execute
+                return chain
+            mock_tbl.update = mock_update
+
+            def mock_select(*args, **kwargs):
+                chain = MagicMock()
+                chain.eq.return_value.execute.return_value = MagicMock(data=[dict(job_record)])
+                return chain
+            mock_tbl.select = mock_select
+
+        elif table_name == "catalogue_import_rows":
+            mock_tbl.delete.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+            def mock_insert(batch):
+                inserted_rows.extend(batch)
+                return MagicMock(execute=MagicMock(return_value=MagicMock(data=batch)))
+            mock_tbl.insert = mock_insert
+            mock_tbl.update.return_value.eq.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+            mock_tbl.select.return_value.eq.return_value.execute.return_value = MagicMock(data=inserted_rows, count=len(inserted_rows))
+
+        elif table_name == "catalogue_import_profiles":
+            mock_tbl.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+            mock_tbl.insert.return_value.execute.return_value = MagicMock(data=[{"id": "mock-prof"}])
+
+        elif table_name == "products":
+            mock_tbl.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+
+        return mock_tbl
+
+    mock_sb = MagicMock()
+    mock_sb.table.side_effect = mock_table
+
+    with patch("app.routers.catalogue_import.get_owned_job", side_effect=lambda j, u: dict(job_record)), \
+         patch("app.routers.catalogue_import.get_supabase", return_value=mock_sb), \
+         patch("app.routers.catalogue_import.download_from_storage", return_value=csv_data):
+
+        # Run two read calls concurrently
+        res1, res2 = await asyncio.gather(
+            read_job(job_id=job_id, user_id=user_id),
+            read_job(job_id=job_id, user_id=user_id),
+        )
+
+        # One caller did the work, the other returned status
+        statuses = [res1["status"], res2["status"]]
+        assert "read" in statuses
+        assert any(r.get("already_claimed") for r in [res1, res2])
+
+        # Exactly 2 data rows inserted (no duplicates from double read!)
+        assert len(inserted_rows) == 2
+
+        # Advance to analyze -> job reaches 'ready'
+        analyze_res = await analyze_job_endpoint(job_id=job_id, user_id=user_id)
+        assert analyze_res["status"] == "ready"
+        assert job_record["status"] == "ready"
+
 
