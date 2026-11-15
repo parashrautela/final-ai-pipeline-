@@ -43,6 +43,9 @@ from app.services.catalogue_import.photos import (
     process_loose_files,
 )
 from app.services.catalogue_import.reader import (
+    MAX_DATA_ROWS,
+    MAX_SHEET_BYTES,
+    MAX_ZIP_BYTES,
     RawRow,
     ReaderLimitExceeded,
     read_source_file,
@@ -99,6 +102,18 @@ class ResolutionsRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@router.get("/limits")
+async def get_import_limits():
+    """Return maximum upload and row limits for catalogue import (P4)."""
+    return {
+        "max_rows": MAX_DATA_ROWS,
+        "max_sheet_bytes": MAX_SHEET_BYTES,
+        "max_sheet_mb": 25,
+        "max_zip_bytes": MAX_ZIP_BYTES,
+        "max_zip_mb": 200,
+    }
+
 
 @router.post("/jobs")
 async def create_import_job(
@@ -235,6 +250,7 @@ async def read_job(
 
         sheets = [s.name for s in read_res.sheets] if read_res else []
         row_count = len(read_res.rows) if read_res else 0
+        _job_read_totals[job_id] = row_count
 
         return {
             "job_id": job_id,
@@ -257,6 +273,8 @@ async def read_job(
 
 
 _analyze_locks: dict[str, asyncio.Lock] = {}
+_commit_tasks: dict[str, asyncio.Task] = {}
+_job_read_totals: dict[str, int] = {}
 
 
 @router.post("/jobs/{job_id}/analyze")
@@ -600,22 +618,47 @@ async def commit_job_endpoint(
     background_tasks: BackgroundTasks,
     user_id: str = Depends(require_user_id),
 ):
-    """Run chunked idempotent commit."""
+    """Run chunked idempotent commit surviving client disconnections (P2)."""
     job = await get_owned_job(job_id, user_id)
 
     if job["status"] == "done":
         return {"job_id": job_id, "status": "done", "summary": job.get("summary") or {}}
 
+    existing_task = _commit_tasks.get(job_id)
+    if existing_task and not existing_task.done():
+        try:
+            summary = await asyncio.shield(existing_task)
+            return {"job_id": job_id, "status": "done", "summary": summary}
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(f"Commit error for job {job_id}: {exc}")
+            raise HTTPException(status_code=500, detail=f"Commit failed: {exc}")
+
     if job["status"] == "committing":
         return {"job_id": job_id, "status": "committing", "message": "Commit already in progress."}
 
     if job["status"] != "ready":
-        raise HTTPException(status_code=400, detail=f"Job cannot be committed in status '{job['status']}'. Must be 'ready'.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job cannot be committed in status '{job['status']}'. Must be 'ready'."
+        )
 
-    # Run commit
+    async def _do_commit():
+        try:
+            return await commit_catalogue_import_job(job_id, user_id)
+        finally:
+            _commit_tasks.pop(job_id, None)
+
+    task = asyncio.create_task(_do_commit())
+    _commit_tasks[job_id] = task
+
     try:
-        summary = await commit_catalogue_import_job(job_id, user_id)
+        summary = await asyncio.shield(task)
         return {"job_id": job_id, "status": "done", "summary": summary}
+    except asyncio.CancelledError:
+        # Client disconnected mid-commit! Shielded task keeps running to completion in background.
+        raise
     except Exception as exc:
         logger.error(f"Commit error for job {job_id}: {exc}", exc_info=exc)
         fresh = await get_owned_job(job_id, user_id)
@@ -629,8 +672,34 @@ async def get_job_status(
     job_id: str,
     user_id: str = Depends(require_user_id),
 ):
-    """Return full job status and summary."""
+    """Return full job status, summary, and progress (P3)."""
     job = await get_owned_job(job_id, user_id)
+    status = job.get("status")
+    progress = None
+
+    if status == "committing":
+        summary = job.get("summary") or {}
+        total = (summary.get("create", 0) + summary.get("update", 0))
+        sb = get_supabase()
+        done_res = sb.table("catalogue_import_rows").select(
+            "id", count="exact"
+        ).eq("job_id", job_id).not_.is_("product_id", "null").execute()
+        done = done_res.count or 0
+        progress = {"done": done, "total": total}
+    elif status == "reading":
+        sb = get_supabase()
+        row_res = sb.table("catalogue_import_rows").select(
+            "id", count="exact"
+        ).eq("job_id", job_id).execute()
+        done = row_res.count or 0
+        total = _job_read_totals.get(job_id) or done
+        progress = {"done": done, "total": total}
+    elif status == "done":
+        summary = job.get("summary") or {}
+        total = (summary.get("create", 0) + summary.get("update", 0))
+        progress = {"done": total, "total": total}
+
+    job["progress"] = progress
     return job
 
 

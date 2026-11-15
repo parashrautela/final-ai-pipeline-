@@ -23,7 +23,7 @@ from odf.text import P
 
 # Limits from plan section 5
 MAX_DATA_ROWS = 5000
-MAX_SHEET_BYTES = 20 * 1024 * 1024       # 20 MB
+MAX_SHEET_BYTES = 25 * 1024 * 1024       # 25 MB
 MAX_ZIP_BYTES = 200 * 1024 * 1024         # 200 MB
 MAX_ZIP_UNCOMPRESSED = 1024 * 1024 * 1024 # 1 GB
 MAX_ZIP_COMPRESSION_RATIO = 100           # zip bomb threshold for large entries
@@ -534,7 +534,7 @@ def read_source_file(data: bytes, filename: str = "", selected_sheets: Optional[
     """
     if len(data) > MAX_SHEET_BYTES:
         raise ReaderLimitExceeded(
-            f"File size ({len(data)} bytes) exceeds the 20 MB limit for spreadsheets"
+            f"File size ({len(data)} bytes) exceeds the 25 MB limit for spreadsheets"
         )
 
     fmt = detect_format_by_content(data, filename)

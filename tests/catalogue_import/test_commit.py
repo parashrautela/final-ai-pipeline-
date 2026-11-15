@@ -440,6 +440,93 @@ async def test_commit_resolves_url_photos():
         mock_upload.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_client_disconnect_during_commit_still_finishes():
+    """P2: If client disconnects mid-commit, shielded task finishes and marks job done."""
+    from fastapi import BackgroundTasks
+    from app.routers.catalogue_import import commit_job_endpoint, _commit_tasks
+
+    job_id = "test-job-disconnect-123"
+    user_id = "user-wid-456"
+    mock_job = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "ready",
+        "summary": {"create": 5, "update": 2},
+    }
+
+    commit_finished = asyncio.Event()
+
+    async def mock_commit_slow(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        commit_finished.set()
+        return {"create": 5, "update": 2}
+
+    with patch("app.routers.catalogue_import.get_owned_job", AsyncMock(return_value=mock_job)), \
+         patch("app.routers.catalogue_import.commit_catalogue_import_job", side_effect=mock_commit_slow):
+
+        # Call commit in a task that gets cancelled (simulating client dropping connection)
+        client_task = asyncio.create_task(
+            commit_job_endpoint(job_id=job_id, background_tasks=BackgroundTasks(), user_id=user_id)
+        )
+        await asyncio.sleep(0.01)
+        client_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await client_task
+
+        # Verify: underlying commit task was NOT cancelled and finishes!
+        await asyncio.wait_for(commit_finished.wait(), timeout=1.0)
+        assert commit_finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_get_job_status_reports_progress():
+    """P3: GET /jobs/{id} returns progress: {done, total} while reading and committing."""
+    from app.routers.catalogue_import import get_job_status
+
+    job_id = "test-job-progress-123"
+    user_id = "user-wid-456"
+
+    # 1. Committing status
+    mock_job_committing = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "committing",
+        "summary": {"create": 10, "update": 5},
+    }
+    mock_sb = MagicMock()
+    mock_sb.table().select().eq().not_.is_().execute.return_value = MagicMock(count=7)
+
+    with patch("app.routers.catalogue_import.get_owned_job", AsyncMock(return_value=mock_job_committing)), \
+         patch("app.routers.catalogue_import.get_supabase", return_value=mock_sb):
+        res = await get_job_status(job_id=job_id, user_id=user_id)
+        assert res["progress"] == {"done": 7, "total": 15}
+
+    # 2. Done status
+    mock_job_done = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "done",
+        "summary": {"create": 10, "update": 5},
+    }
+    with patch("app.routers.catalogue_import.get_owned_job", AsyncMock(return_value=mock_job_done)):
+        res = await get_job_status(job_id=job_id, user_id=user_id)
+        assert res["progress"] == {"done": 15, "total": 15}
+
+
+@pytest.mark.asyncio
+async def test_get_limits_endpoint():
+    """P4: GET /limits returns row cap and file sizes in one place."""
+    from app.routers.catalogue_import import get_import_limits
+
+    limits = await get_import_limits()
+    assert limits["max_rows"] == 5000
+    assert limits["max_sheet_mb"] == 25
+    assert limits["max_zip_mb"] == 200
+
+
+
 
 
 
