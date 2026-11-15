@@ -122,36 +122,36 @@ VALUE_SYNONYMS: dict[str, dict[str, list[str]]] = {
             "couple ring", "cocktail ring"
         ],
         "necklace": [
-            "nkl", "necklace", "necklaces", "neck", "haar", "हार", "choker",
+            "nkl", "necklace", "necklaces", "neckless", "neck", "haar", "हार", "choker",
             "collar", "kanthi", "short necklace", "guluband", "necklace set"
         ],
         "chain": [
-            "chain", "chains", "neck chain", "neck chains", "zanjeer", "जंजीर",
+            "chn", "chain", "chains", "neck chain", "neck chains", "zanjeer", "जंजीर",
             "zanjir", "kadi chain", "gold chain", "silver chain", "gents chain", "ladies chain"
         ],
         "earrings": [
-            "earrings", "earring", "jhumka", "jhumki", "bali", "tops", "studs",
+            "er", "earrings", "earring", "jhumka", "jhumki", "bali", "tops", "studs",
             "drop", "झुमका", "बाली", "kaan ki bali", "ear ring", "ear rings",
             "sui dhaga", "chaandbali", "hoops"
         ],
         "haram": [
-            "haram", "rani haar", "ranihaar", "long haram", "रानी हार",
+            "hrm", "haram", "rani haar", "ranihaar", "long haram", "रानी हार",
             "bridal haram", "sita haar", "long necklace", "laxmi haram", "temple haram"
         ],
         "pendant": [
-            "pendant", "pendants", "locket", "pend", "लॉकेट", "pendant set",
+            "pdt", "pendant", "pendants", "locket", "pend", "लॉकेट", "pendant set",
             "lockets", "om locket", "god pendant", "heart pendant"
         ],
         "bangles": [
-            "bangles", "bangle", "kangan", "chudi", "choodi", "kada", "कंगन",
+            "bng", "bangles", "bangle", "kangan", "chudi", "choodi", "kada", "कंगन",
             "चूड़ी", "कड़ा", "bracelet", "bracelets", "patla", "chuda", "pair bangles"
         ],
         "nosepins": [
-            "nosepins", "nosepin", "nath", "laung", "नथ", "लौंग", "nose pin",
+            "np", "nosepins", "nosepin", "nose pin", "nath", "laung", "नथ", "लौंग",
             "nose ring", "nose stud", "mookuthi"
         ],
         "mangalsutra": [
-            "mangalsutra", "tanmaniya", "मंगलसूत्र", "mangalsutra chain", "ms",
+            "ms", "mangalsutra", "mangal sutra", "tanmaniya", "मंगलसूत्र", "mangalsutra chain",
             "black beads chain", "short mangalsutra", "long mangalsutra"
         ],
     },
