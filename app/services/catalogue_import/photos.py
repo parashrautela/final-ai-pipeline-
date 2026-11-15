@@ -16,12 +16,14 @@ Implements specifications from 01_ANTIGRAVITY_PLAN.md Section 8:
 
 from __future__ import annotations
 
+import asyncio
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 import io
 import os
 from pathlib import Path
 import re
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Optional
 import zipfile
 
 from PIL import Image
@@ -42,21 +44,53 @@ SUFFIX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# In-memory cache for downloaded & EXIF-stripped photo URLs (Item 15)
-_url_photo_cache: dict[str, tuple[bytes, str]] = {}
+# In-memory LRU cache capped at 100 MB total bytes (Item 19)
+MAX_CACHE_BYTES = 100 * 1024 * 1024  # 100 MB
+_url_photo_cache: OrderedDict[str, tuple[bytes, str]] = OrderedDict()
+_current_cache_bytes: int = 0
+PHOTO_SEMAPHORE = asyncio.Semaphore(4)
 
 
 def get_cached_photo_url(url: str) -> Optional[tuple[bytes, str]]:
     """Retrieve pre-downloaded (bytes, mime) for a URL so commit doesn't download twice."""
     u = url.strip()
-    return _url_photo_cache.get(u) or _url_photo_cache.get(u.lower())
+    if u in _url_photo_cache:
+        _url_photo_cache.move_to_end(u)
+        return _url_photo_cache[u]
+    u_lower = u.lower()
+    if u_lower in _url_photo_cache:
+        _url_photo_cache.move_to_end(u_lower)
+        return _url_photo_cache[u_lower]
+    return None
 
 
 def cache_photo_url(url: str, data: bytes, mime: str) -> None:
-    """Store pre-downloaded photo in cache (capped to 500 items)."""
-    if len(_url_photo_cache) > 500:
-        _url_photo_cache.clear()
-    _url_photo_cache[url.strip()] = (data, mime)
+    """Store pre-downloaded photo in cache, evicting oldest items when total bytes exceeds 100 MB (Item 19)."""
+    global _current_cache_bytes
+    u = url.strip()
+    new_bytes = len(data)
+
+    if u in _url_photo_cache:
+        old_data, _ = _url_photo_cache.pop(u)
+        _current_cache_bytes -= len(old_data)
+
+    while _url_photo_cache and (_current_cache_bytes + new_bytes > MAX_CACHE_BYTES):
+        old_key, (old_val, _) = _url_photo_cache.popitem(last=False)
+        _current_cache_bytes -= len(old_val)
+
+    if new_bytes <= MAX_CACHE_BYTES:
+        _url_photo_cache[u] = (data, mime)
+        _current_cache_bytes += new_bytes
+
+
+def get_current_cache_bytes() -> int:
+    return _current_cache_bytes
+
+
+def clear_photo_cache() -> None:
+    global _current_cache_bytes
+    _url_photo_cache.clear()
+    _current_cache_bytes = 0
 
 
 
@@ -412,3 +446,154 @@ def match_photos_images_only(
             summary.unmatched_files.append(os.path.basename(p.filename))
 
     return result
+
+
+async def match_photos_to_rows_async(
+    rows: list[Any],
+    photos: list[ProcessedPhoto],
+    summary: PhotoSummary,
+    url_fetch_enabled: bool = True,
+) -> None:
+    """Match photos to rows in-place based on Section 8 rules (first hit wins).
+
+    Asynchronous variant that downloads photo URLs in threads bounded by PHOTO_SEMAPHORE (4)
+    without blocking the FastAPI event loop (Item 18).
+    """
+    photo_by_basename: dict[str, list[ProcessedPhoto]] = {}
+    for p in photos:
+        photo_by_basename.setdefault(p.basename, []).append(p)
+
+    used_photos: set[str] = set()
+
+    row_by_code: dict[str, Any] = {}
+    for r in rows:
+        if r.product_code and not r.is_error and r.action != "skipped":
+            row_by_code[r.product_code.strip().upper()] = r
+
+    # 1. First hit wins for each row: Rule 1 (Filename)
+    for r in rows:
+        if not r.product_code or r.is_error or r.action in ("skipped", "duplicate_skipped"):
+            continue
+
+        sheet_photo_col = (r.sheet_photo_value or "").strip()
+        if sheet_photo_col and not sheet_photo_col.lower().startswith("http"):
+            target_base = clean_base_name(sheet_photo_col)
+            candidates = photo_by_basename.get(target_base, [])
+            for cand in candidates:
+                if cand.filename not in used_photos:
+                    r.photo_file = cand
+                    used_photos.add(cand.filename)
+                    summary.matched += 1
+                    break
+
+    # 2. Rule 2: Photo column holds a URL (downloaded concurrently in worker threads)
+    if url_fetch_enabled:
+        rows_needing_url = [
+            r for r in rows
+            if not r.photo_file
+            and r.product_code
+            and not r.is_error
+            and r.action not in ("skipped", "duplicate_skipped")
+            and (r.sheet_photo_value or "").strip().lower().startswith("http")
+        ]
+
+        if rows_needing_url:
+            async def _fetch_url_for_row(r: Any) -> None:
+                sheet_photo_col = (r.sheet_photo_value or "").strip()
+                code = r.product_code.strip()
+                clean_code = code.lower()
+
+                cached = get_cached_photo_url(sheet_photo_col)
+                if cached:
+                    clean_bytes, clean_mime = cached
+                    p = ProcessedPhoto(
+                        filename=sheet_photo_col,
+                        basename=clean_base_name(sheet_photo_col) or clean_code,
+                        clean_bytes=clean_bytes,
+                        mime_type=clean_mime,
+                    )
+                    r.photo_file = p
+                    summary.matched += 1
+                    return
+
+                async with PHOTO_SEMAPHORE:
+                    cached = get_cached_photo_url(sheet_photo_col)
+                    if cached:
+                        clean_bytes, clean_mime = cached
+                        p = ProcessedPhoto(
+                            filename=sheet_photo_col,
+                            basename=clean_base_name(sheet_photo_col) or clean_code,
+                            clean_bytes=clean_bytes,
+                            mime_type=clean_mime,
+                        )
+                        r.photo_file = p
+                        summary.matched += 1
+                        return
+
+                    try:
+                        def _fetch_sync() -> tuple[bytes, str]:
+                            raw, _ = safe_fetch_image(sheet_photo_col)
+                            return process_and_strip_exif(raw)
+
+                        clean_bytes, clean_mime = await asyncio.to_thread(_fetch_sync)
+                        cache_photo_url(sheet_photo_col, clean_bytes, clean_mime)
+                        p = ProcessedPhoto(
+                            filename=sheet_photo_col,
+                            basename=clean_base_name(sheet_photo_col) or clean_code,
+                            clean_bytes=clean_bytes,
+                            mime_type=clean_mime,
+                        )
+                        r.photo_file = p
+                        summary.matched += 1
+                    except Exception as exc:
+                        r.photo_error = f"URL fetch failed: {exc}"
+                        if "exceed" in str(exc).lower():
+                            summary.rejected[sheet_photo_col] = "over 10 MB"
+
+            await asyncio.gather(*[_fetch_url_for_row(r) for r in rows_needing_url])
+
+    # 3. Rule 3: File whose base name equals the product code
+    for r in rows:
+        if not r.product_code or r.is_error or r.action in ("skipped", "duplicate_skipped"):
+            continue
+        if not r.photo_file:
+            clean_code = r.product_code.strip().lower()
+            candidates = photo_by_basename.get(clean_code, [])
+            for cand in candidates:
+                if cand.filename not in used_photos:
+                    r.photo_file = cand
+                    used_photos.add(cand.filename)
+                    summary.matched += 1
+                    break
+
+    # 4. Rule 4: Extra photos (Code + suffix)
+    for p in photos:
+        if p.filename in used_photos:
+            continue
+        matched_code: str | None = None
+        for code_upper, r in row_by_code.items():
+            code_lower = code_upper.lower()
+            if p.basename.startswith(code_lower):
+                remainder = p.basename[len(code_lower) :]
+                if SUFFIX_PATTERN.match(remainder):
+                    matched_code = code_upper
+                    break
+        if matched_code:
+            target_row = row_by_code[matched_code]
+            target_row.extra_photos.append(p)
+            used_photos.add(p.filename)
+            summary.extra_photos += 1
+
+    # Remaining unused valid images -> unmatched_files
+    for p in photos:
+        if p.filename not in used_photos:
+            summary.unmatched_files.append(os.path.basename(p.filename))
+
+    # Track products without photo
+    no_photo_codes = set()
+    for r in rows:
+        if not r.product_code or r.is_error or r.action in ("skipped", "duplicate_skipped"):
+            continue
+        if not r.photo_file:
+            no_photo_codes.add(r.product_code)
+    summary.products_without_photo = sorted(no_photo_codes)

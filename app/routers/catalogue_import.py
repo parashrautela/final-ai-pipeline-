@@ -40,6 +40,7 @@ from app.services.catalogue_import.photos import (
     extract_photos_from_zip,
     match_photos_images_only,
     match_photos_to_rows,
+    match_photos_to_rows_async,
     process_loose_files,
 )
 from app.services.catalogue_import.reader import (
@@ -495,8 +496,8 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
         match_photos_images_only(existing_products, valid_photos, photo_summary)
         summary = {"create": 0, "update": 0, "unchanged": len(existing_products), "conflict": 0, "not_in_file": 0, "error": 0, "skipped": 0, "duplicate_skipped": 0}
     else:
-        # Match photos to sheet rows
-        match_photos_to_rows(norm_rows, valid_photos, photo_summary)
+        # Match photos to sheet rows (async with bounded thread downloads for URLs)
+        await match_photos_to_rows_async(norm_rows, valid_photos, photo_summary)
 
         # Item 6: Determine which existing products belong to the same import series/profile/sheet for not_in_file calculation
         profile_id = job.get("profile_id")

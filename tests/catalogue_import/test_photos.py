@@ -26,10 +26,16 @@ from app.services.catalogue_import.mapper import analyze_import
 from app.services.catalogue_import.normalize import NormalizedRow, normalize_row
 from app.services.catalogue_import.merge import detect_intra_job_duplicates
 from app.services.catalogue_import.photos import (
+    MAX_CACHE_BYTES,
     PhotoSummary,
+    cache_photo_url,
+    clear_photo_cache,
     extract_photos_from_zip,
-    match_photos_to_rows,
+    get_cached_photo_url,
+    get_current_cache_bytes,
     match_photos_images_only,
+    match_photos_to_rows,
+    match_photos_to_rows_async,
     process_and_strip_exif,
 )
 
@@ -138,3 +144,106 @@ def test_exif_and_gps_stripping():
     clean_exif = clean_im.getexif()
     assert 0x010E not in clean_exif
     assert 0x0132 not in clean_exif
+
+
+def test_url_photo_cache_100mb_cap_item_19():
+    """Item 19: Photo cache caps memory at 100 MB total bytes, dropping oldest entries."""
+    clear_photo_cache()
+    assert get_current_cache_bytes() == 0
+
+    chunk_size = 5 * 1024 * 1024  # 5 MB
+    dummy_payload = b"X" * chunk_size
+
+    # Cache 25 items of 5 MB each = 125 MB total attempted
+    for i in range(25):
+        url = f"https://example.com/photo_{i:02d}.jpg"
+        cache_photo_url(url, dummy_payload, "image/jpeg")
+
+    # Assert cache byte total stays strictly <= 100 MB
+    assert get_current_cache_bytes() <= MAX_CACHE_BYTES
+    # 100 MB can hold at most 20 chunks of 5 MB
+    assert get_current_cache_bytes() == 20 * chunk_size
+
+    # The oldest entries (0-4) must have been evicted in LRU order
+    for i in range(5):
+        assert get_cached_photo_url(f"https://example.com/photo_{i:02d}.jpg") is None
+
+    # The latest entries (5-24) must still be cached
+    for i in range(5, 25):
+        cached = get_cached_photo_url(f"https://example.com/photo_{i:02d}.jpg")
+        assert cached is not None
+        assert len(cached[0]) == chunk_size
+
+    clear_photo_cache()
+    assert get_current_cache_bytes() == 0
+
+
+@pytest.mark.asyncio
+async def test_match_photos_to_rows_async_non_blocking_event_loop_item_18(monkeypatch):
+    """Item 18: Analyze with slow photo links downloads concurrently in threads without blocking event loop."""
+    import time
+    import asyncio
+
+    # Create dummy 1x1 jpeg bytes
+    im = Image.new("RGB", (10, 10), color="blue")
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG")
+    valid_jpeg_bytes = buf.getvalue()
+
+    active_fetches = 0
+    max_concurrent_fetches = 0
+
+    def mock_safe_fetch(url: str):
+        nonlocal active_fetches, max_concurrent_fetches
+        active_fetches += 1
+        if active_fetches > max_concurrent_fetches:
+            max_concurrent_fetches = active_fetches
+        # Simulate blocking socket read (0.05s per photo)
+        time.sleep(0.05)
+        active_fetches -= 1
+        return valid_jpeg_bytes, "image/jpeg"
+
+    monkeypatch.setattr("app.services.catalogue_import.photos.safe_fetch_image", mock_safe_fetch)
+
+    rows = []
+    for i in range(20):
+        code = f"CODE{i:03d}"
+        r = NormalizedRow(
+            sheet="Sheet1",
+            row_number=i + 2,
+            raw={"Code": code, "Photo": f"https://slow-cdn.example.com/{code}.jpg"},
+            product_code=code,
+            sheet_photo_value=f"https://slow-cdn.example.com/{code}.jpg",
+        )
+        rows.append(r)
+
+    summary = PhotoSummary()
+    clear_photo_cache()
+
+    max_loop_lag_ms = 0.0
+    stop_probe = False
+
+    async def latency_probe():
+        nonlocal max_loop_lag_ms
+        while not stop_probe:
+            t0 = time.perf_counter()
+            await asyncio.sleep(0.005)
+            lag = (time.perf_counter() - t0 - 0.005) * 1000.0
+            if lag > max_loop_lag_ms:
+                max_loop_lag_ms = lag
+
+    probe_task = asyncio.create_task(latency_probe())
+
+    try:
+        await match_photos_to_rows_async(rows, [], summary, url_fetch_enabled=True)
+    finally:
+        stop_probe = True
+        await probe_task
+
+    assert summary.matched == 20
+    for r in rows:
+        assert r.photo_file is not None
+        assert r.photo_error is None
+
+    assert max_concurrent_fetches <= 4
+    assert max_loop_lag_ms < 100.0, f"Event loop lag too high: {max_loop_lag_ms:.2f} ms"
