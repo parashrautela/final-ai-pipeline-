@@ -1,5 +1,21 @@
 -- 040_catalogue_import.rollback.sql
 -- Rollback for 040_catalogue_import.sql
+--
+-- Note: Empty the 'catalogue-imports' bucket via the Storage API or Supabase dashboard first
+-- before running this rollback. SQL deletes on storage.objects are blocked by storage triggers.
+
+begin;
+
+-- Verify the bucket is empty before proceeding.
+do $$
+declare
+  v_count int;
+begin
+  select count(*) into v_count from storage.objects where bucket_id = 'catalogue-imports';
+  if v_count > 0 then
+    raise exception 'Bucket catalogue-imports is not empty (% objects found). Please empty all objects from catalogue-imports via the Storage API or Supabase dashboard before running rollback.', v_count;
+  end if;
+end $$;
 
 -- 1. Storage policies and bucket
 drop policy if exists "Wholesalers can delete own catalogue imports" on storage.objects;
@@ -29,3 +45,5 @@ alter table public.products
   drop column if exists import_job_id,
   drop column if exists import_snapshot,
   drop column if exists extra_attributes;
+
+commit;

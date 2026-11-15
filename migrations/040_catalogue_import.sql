@@ -1,6 +1,8 @@
 -- 040_catalogue_import.sql
 -- Bulk catalogue import schema: products columns, profiles, jobs, rows, and storage bucket/policies.
 
+begin;
+
 -- 1. products: identity for re-imports + where unmapped columns go
 alter table public.products
   add column if not exists product_code      text,
@@ -128,3 +130,5 @@ create policy "Wholesalers can delete own catalogue imports"
     bucket_id = 'catalogue-imports'
     and (storage.foldername(name))[1] = auth.uid()::text
   );
+
+commit;
