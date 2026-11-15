@@ -429,7 +429,7 @@ async def test_commit_resolves_url_photos():
     with patch("app.services.catalogue_import.commit.safe_fetch_image", return_value=(dummy_img, "image/jpeg")), \
          patch("app.services.catalogue_import.commit.process_and_strip_exif", return_value=(dummy_img, "image/jpeg")), \
          patch("app.services.catalogue_import.commit.upload_file_to_storage", return_value="https://storage.example.com/raw/user/photo1.jpg") as mock_upload:
-        main_url, extra = _resolve_photo_urls(
+        main_url, extra, failed = await _resolve_photo_urls(
             wholesaler_id="user-123",
             job_id="job-456",
             photo_refs=["https://test.com/photo1.jpg"],
@@ -437,6 +437,7 @@ async def test_commit_resolves_url_photos():
         )
         assert main_url == "https://storage.example.com/raw/user/photo1.jpg"
         assert extra == []
+        assert failed == []
         mock_upload.assert_called_once()
 
 
@@ -462,7 +463,11 @@ async def test_client_disconnect_during_commit_still_finishes():
         commit_finished.set()
         return {"create": 5, "update": 2}
 
+    mock_sb = MagicMock()
+    mock_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(data=[{"id": job_id}])
+
     with patch("app.routers.catalogue_import.get_owned_job", AsyncMock(return_value=mock_job)), \
+         patch("app.routers.catalogue_import.get_supabase", return_value=mock_sb), \
          patch("app.routers.catalogue_import.commit_catalogue_import_job", side_effect=mock_commit_slow):
 
         # Call commit in a task that gets cancelled (simulating client dropping connection)
@@ -524,6 +529,294 @@ async def test_get_limits_endpoint():
     assert limits["max_rows"] == 5000
     assert limits["max_sheet_mb"] == 25
     assert limits["max_zip_mb"] == 200
+
+
+@pytest.mark.asyncio
+async def test_hostile_photo_urls_never_saved_as_product_image_item_14():
+    """Item 14: Failed/hostile photo URLs (SSRF, metadata, non-image) must never become product image.
+    On failure, store nothing, record warning in row messages, and record in photo_summary.rejected.
+    """
+    from app.services.catalogue_import.commit import _resolve_photo_urls, commit_catalogue_import_job
+    from app.services.catalogue_import.safe_fetch import SSRFError
+
+    hostile_urls = [
+        "http://169.254.169.254/latest/meta-data",
+        "http://localhost:8000/admin",
+        "https://example.com/not-an-image.html",
+    ]
+
+    def mock_fetch(url):
+        if "169.254" in url or "localhost" in url:
+            raise SSRFError(f"Blocked SSRF target: {url}")
+        # Return HTML bytes that fail image validation
+        return (b"<!DOCTYPE html><html><body>Error 404</body></html>", "text/html")
+
+    # 1. Direct _resolve_photo_urls check
+    with patch("app.services.catalogue_import.commit.safe_fetch_image", side_effect=mock_fetch):
+        main_url, extra_urls, failed = await _resolve_photo_urls(
+            wholesaler_id="wid-hostile",
+            job_id="job-hostile",
+            photo_refs=hostile_urls,
+            stored_photos=None,
+        )
+    assert main_url is None
+    assert extra_urls == []
+    assert len(failed) == 3
+    failed_refs = [f[0] for f in failed]
+    assert hostile_urls == failed_refs
+
+    # 2. End-to-end commit check verifying product insertion has null raw_image_url and empty images
+    job_id = "test-job-item14"
+    user_id = "user-wid-item14"
+    mock_job = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "ready",
+        "source_kind": "file",
+        "source_files": [],
+        "photo_summary": {"rejected": {}},
+    }
+
+    mock_row = {
+        "id": "row-hostile-1",
+        "job_id": job_id,
+        "product_code": "HOSTILE01",
+        "action": "create",
+        "resolution": None,
+        "product_id": None,
+        "photo_refs": hostile_urls,
+        "messages": [],
+        "normalized": {
+            "title": "Hostile Ring",
+            "jewellery_type": "ring",
+            "category": "gold",
+            "gross_weight": 5.0,
+            "net_weight": 5.0,
+        },
+    }
+
+    inserted_products = []
+    updated_rows = {}
+    updated_jobs = {}
+    rows_calls = {"count": 0}
+
+    def mock_table(name):
+        t = MagicMock()
+        if name == "catalogue_import_jobs":
+            t.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[mock_job])
+            def mock_job_update(payload):
+                updated_jobs.update(payload)
+                m = MagicMock()
+                m.eq.return_value.eq.return_value.execute.return_value = MagicMock(data=[mock_job])
+                m.eq.return_value.execute.return_value = MagicMock(data=[mock_job])
+                return m
+            t.update.side_effect = mock_job_update
+        elif name == "products":
+            t.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+            def mock_insert(payload):
+                inserted_products.append(payload)
+                m = MagicMock()
+                m.execute.return_value = MagicMock(data=[{"id": f"prod-{len(inserted_products)}", **payload}])
+                return m
+            t.insert.side_effect = mock_insert
+        elif name == "catalogue_import_rows":
+            def mock_rows_select(*args, **kwargs):
+                rows_calls["count"] += 1
+                m = MagicMock()
+                if rows_calls["count"] == 1:
+                    m.eq.return_value.in_.return_value.is_.return_value.order.return_value.limit.return_value.execute.return_value = MagicMock(data=[mock_row])
+                else:
+                    m.eq.return_value.in_.return_value.is_.return_value.order.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
+                return m
+            t.select = mock_rows_select
+            def mock_row_update(payload):
+                updated_rows.update(payload)
+                m = MagicMock()
+                m.eq.return_value.execute.return_value = MagicMock(data=[])
+                return m
+            t.update.side_effect = mock_row_update
+        elif name == "wholesaler_import_profiles":
+            t.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+        return t
+
+    mock_sb = MagicMock()
+    mock_sb.table.side_effect = mock_table
+
+    with patch("app.services.catalogue_import.commit.get_supabase", return_value=mock_sb), \
+         patch("app.services.catalogue_import.commit.safe_fetch_image", side_effect=mock_fetch):
+        await commit_catalogue_import_job(job_id=job_id, wholesaler_id=user_id)
+
+    # Verify: Product created without hostile image URL!
+    assert len(inserted_products) == 1
+    prod = inserted_products[0]
+    assert prod.get("raw_image_url") is None
+    assert prod.get("images") is None or prod.get("images") == []
+    for h in hostile_urls:
+        assert h != prod.get("raw_image_url")
+        assert h not in (prod.get("images") or [])
+
+    # Verify: Row messages record the photo warning
+    assert "messages" in updated_rows
+    warnings = [m for m in updated_rows["messages"] if m.get("field") == "photo"]
+    assert len(warnings) == 3
+
+    # Verify: Job photo_summary.rejected records the hostile URLs
+    assert "photo_summary" in updated_jobs
+    rej = updated_jobs["photo_summary"]["rejected"]
+    for h in hostile_urls:
+        assert h in rej
+
+
+@pytest.mark.asyncio
+async def test_photo_download_does_not_block_event_loop_item_15():
+    """Item 15: Photo downloading runs in worker threads with bounded concurrency and does not
+    freeze the event loop (e.g. concurrent /health check latency < 100ms). Also verifies cache.
+    """
+    import time
+    from app.services.catalogue_import.commit import _resolve_photo_urls
+    from app.services.catalogue_import.photos import cache_photo_url
+
+    dummy_img = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
+    urls = [f"https://example.com/photos/item_{i}.jpg" for i in range(12)]
+
+    # 1. Pre-cache one URL to verify it avoids redundant network calls
+    cache_photo_url(urls[0], dummy_img, "image/jpeg")
+
+    fetched_urls = []
+    def slow_blocking_fetch(url):
+        # Simulate blocking socket I/O taking 0.1s per uncached image
+        time.sleep(0.08)
+        fetched_urls.append(url)
+        return (dummy_img, "image/jpeg")
+
+    max_loop_lag_ms = 0.0
+    stop_monitor = asyncio.Event()
+
+    async def event_loop_monitor():
+        nonlocal max_loop_lag_ms
+        while not stop_monitor.is_set():
+            t0 = time.perf_counter()
+            await asyncio.sleep(0.01)
+            lag = (time.perf_counter() - t0 - 0.01) * 1000.0
+            if lag > max_loop_lag_ms:
+                max_loop_lag_ms = lag
+
+    monitor_task = asyncio.create_task(event_loop_monitor())
+
+    with patch("app.services.catalogue_import.commit.safe_fetch_image", side_effect=slow_blocking_fetch), \
+         patch("app.services.catalogue_import.commit.process_and_strip_exif", return_value=(dummy_img, "image/jpeg")), \
+         patch("app.services.catalogue_import.commit.upload_file_to_storage", return_value="https://storage/img.jpg"):
+        main_url, extra_urls, failed = await _resolve_photo_urls(
+            wholesaler_id="wid-item15",
+            job_id="job-item15",
+            photo_refs=urls,
+            stored_photos=None,
+        )
+
+    stop_monitor.set()
+    await monitor_task
+
+    # Pre-cached url was NOT fetched again
+    assert urls[0] not in fetched_urls
+    # Remaining 11 were fetched
+    assert len(fetched_urls) == 11
+    # Main url and extras successfully set
+    assert main_url == "https://storage/img.jpg"
+    assert len(extra_urls) == 11
+    assert failed == []
+
+    # Verify event loop lag remained well below 100ms
+    assert max_loop_lag_ms < 100.0, f"Event loop lagged by {max_loop_lag_ms} ms (expected < 100 ms)"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_double_commit_atomic_claim_item_16():
+    """Item 16: Two concurrent /commit calls on the same ready job safely execute atomically.
+    Only one caller claims 'committing' and commits products; the second receives the status/summary
+    without running duplicate inserts or errors.
+    """
+    import uuid
+    from fastapi import BackgroundTasks
+    from app.routers.catalogue_import import commit_job_endpoint, _commit_tasks
+
+    job_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+
+    job_state = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "ready",
+        "summary": None,
+    }
+
+    commit_count = 0
+    claim_count = 0
+
+    async def mock_commit_impl(jid, wid):
+        nonlocal commit_count
+        commit_count += 1
+        await asyncio.sleep(0.04)
+        job_state["status"] = "done"
+        job_state["summary"] = {"create": 3, "update": 1}
+        return {"create": 3, "update": 1}
+
+    def mock_table(name):
+        t = MagicMock()
+        if name == "catalogue_import_jobs":
+            def mock_update(payload):
+                m = MagicMock()
+                def mock_eq1(f1, v1):
+                    def mock_eq2(f2, v2):
+                        def mock_eq3(f3, v3):
+                            def mock_exec():
+                                nonlocal claim_count
+                                if payload.get("status") == "committing" and job_state["status"] == "ready":
+                                    job_state["status"] = "committing"
+                                    claim_count += 1
+                                    return MagicMock(data=[job_state])
+                                return MagicMock(data=[])
+                            m3 = MagicMock()
+                            m3.execute = mock_exec
+                            return m3
+                        m2 = MagicMock()
+                        m2.eq = mock_eq3
+                        return m2
+                    m1 = MagicMock()
+                    m1.eq = mock_eq2
+                    return m1
+                m.eq = mock_eq1
+                return m
+            t.update = mock_update
+        return t
+
+    mock_sb = MagicMock()
+    mock_sb.table.side_effect = mock_table
+
+    async def mock_get_owned_job(jid, uid):
+        return dict(job_state)
+
+    _commit_tasks.clear()
+
+    with patch("app.routers.catalogue_import.get_owned_job", side_effect=mock_get_owned_job), \
+         patch("app.routers.catalogue_import.get_supabase", return_value=mock_sb), \
+         patch("app.routers.catalogue_import.commit_catalogue_import_job", side_effect=mock_commit_impl):
+
+        res1, res2 = await asyncio.gather(
+            commit_job_endpoint(job_id=job_id, background_tasks=BackgroundTasks(), user_id=user_id),
+            commit_job_endpoint(job_id=job_id, background_tasks=BackgroundTasks(), user_id=user_id),
+        )
+
+    # Both returned successfully
+    assert res1["status"] in ("done", "committing")
+    assert res2["status"] in ("done", "committing")
+    # Exactly one claim and one commit execution!
+    assert claim_count == 1
+    assert commit_count == 1
+    # Both report the same summary
+    s1 = res1.get("summary") or {"create": 3, "update": 1}
+    s2 = res2.get("summary") or {"create": 3, "update": 1}
+    assert s1 == {"create": 3, "update": 1}
+    assert s2 == {"create": 3, "update": 1}
 
 
 

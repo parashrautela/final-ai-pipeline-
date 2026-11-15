@@ -635,13 +635,28 @@ async def commit_job_endpoint(
             logger.error(f"Commit error for job {job_id}: {exc}")
             raise HTTPException(status_code=500, detail=f"Commit failed: {exc}")
 
-    if job["status"] == "committing":
-        return {"job_id": job_id, "status": "committing", "message": "Commit already in progress."}
+    # Atomic claim on /commit: only claim if status is 'ready'
+    sb = get_supabase()
+    claim_res = sb.table("catalogue_import_jobs").update(
+        {"status": "committing"}
+    ).eq("id", job_id).eq("wholesaler_id", user_id).eq("status", "ready").execute()
 
-    if job["status"] != "ready":
+    if not claim_res.data:
+        fresh = await get_owned_job(job_id, user_id)
+        if fresh.get("status") == "committing":
+            existing_task = _commit_tasks.get(job_id)
+            if existing_task:
+                try:
+                    summary = await asyncio.shield(existing_task)
+                    return {"job_id": job_id, "status": "done", "summary": summary}
+                except Exception:
+                    pass
+            return {"job_id": job_id, "status": "committing", "message": "Commit already in progress."}
+        if fresh.get("status") == "done":
+            return {"job_id": job_id, "status": fresh["status"], "summary": fresh.get("summary") or {}}
         raise HTTPException(
             status_code=400,
-            detail=f"Job cannot be committed in status '{job['status']}'. Must be 'ready'."
+            detail=f"Job cannot be committed in status '{fresh.get('status')}'. Must be 'ready'."
         )
 
     async def _do_commit():
