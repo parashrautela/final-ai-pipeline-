@@ -42,6 +42,23 @@ SUFFIX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# In-memory cache for downloaded & EXIF-stripped photo URLs (Item 15)
+_url_photo_cache: dict[str, tuple[bytes, str]] = {}
+
+
+def get_cached_photo_url(url: str) -> Optional[tuple[bytes, str]]:
+    """Retrieve pre-downloaded (bytes, mime) for a URL so commit doesn't download twice."""
+    u = url.strip()
+    return _url_photo_cache.get(u) or _url_photo_cache.get(u.lower())
+
+
+def cache_photo_url(url: str, data: bytes, mime: str) -> None:
+    """Store pre-downloaded photo in cache (capped to 500 items)."""
+    if len(_url_photo_cache) > 500:
+        _url_photo_cache.clear()
+    _url_photo_cache[url.strip()] = (data, mime)
+
+
 
 @dataclass
 class ProcessedPhoto:
@@ -259,8 +276,13 @@ def match_photos_to_rows(
         if not r.photo_file and sheet_photo_col and sheet_photo_col.lower().startswith("http"):
             if url_fetch_enabled:
                 try:
-                    data, mime = safe_fetch_image(sheet_photo_col)
-                    clean_bytes, clean_mime = process_and_strip_exif(data)
+                    cached = get_cached_photo_url(sheet_photo_col)
+                    if cached:
+                        clean_bytes, clean_mime = cached
+                    else:
+                        data, mime = safe_fetch_image(sheet_photo_col)
+                        clean_bytes, clean_mime = process_and_strip_exif(data)
+                        cache_photo_url(sheet_photo_col, clean_bytes, clean_mime)
                     p = ProcessedPhoto(
                         filename=sheet_photo_col,
                         basename=clean_base_name(sheet_photo_col) or clean_code,
