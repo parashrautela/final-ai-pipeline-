@@ -25,7 +25,7 @@ from app.config import settings
 from app.db.repository import get_supabase
 from app.logging import logger
 from app.services.storage import public_url_for, upload_file_to_storage, download_from_storage
-from app.services.catalogue_import.photos import PhotoSummary, extract_photos_from_zip, process_and_strip_exif
+from app.services.catalogue_import.photos import PhotoSummary, extract_photos_from_zip, process_and_strip_exif, get_cached_photo_url, cache_photo_url
 from app.services.catalogue_import.safe_fetch import validate_wholesaler_storage_path, safe_fetch_image
 
 CHUNK_SIZE = 100
@@ -65,8 +65,19 @@ async def commit_catalogue_import_job(
     if job["status"] not in ("ready", "committing"):
         raise CommitError(f"Job cannot be committed in status '{job['status']}'. Must be 'ready'.")
 
-    # Set status to committing
-    sb.table("catalogue_import_jobs").update({"status": "committing"}).eq("id", job_id).execute()
+    # Atomic claim: update status to committing only if it is currently ready
+    claim_res = sb.table("catalogue_import_jobs").update(
+        {"status": "committing"}
+    ).eq("id", job_id).eq("status", "ready").execute()
+
+    if not claim_res.data:
+        # Not claimed by us (or already committing / done)
+        fresh = sb.table("catalogue_import_jobs").select("*").eq("id", job_id).execute()
+        current = fresh.data[0] if fresh.data else job
+        if current.get("status") in ("done", "committing"):
+            logger.info(f"Job {job_id} is already in status '{current.get('status')}'. Returning summary.")
+            return current.get("summary") or {}
+        raise CommitError(f"Job cannot be committed in status '{current.get('status')}'. Must be 'ready'.")
 
     # 2. Fetch existing products for this wholesaler
     existing_res = sb.table("products").select(
@@ -105,6 +116,7 @@ async def commit_catalogue_import_job(
     total_created = 0
     total_updated = 0
     total_unchanged = 0
+    new_rejected: dict[str, str] = {}
 
     while True:
         # Fetch uncommitted rows (product_id is null and action in actionable list)
@@ -146,13 +158,24 @@ async def commit_catalogue_import_job(
 
                 # Process photo if present
                 photo_refs = row.get("photo_refs") or []
-                raw_url, extra_urls = _resolve_photo_urls(
+                raw_url, extra_urls, failed_photos = await _resolve_photo_urls(
                     wholesaler_id, job_id, photo_refs, stored_photos
                 )
                 if raw_url:
                     prod_data["raw_image_url"] = raw_url
                 if extra_urls:
                     prod_data["images"] = extra_urls
+
+                if failed_photos:
+                    row_msgs = list(row.get("messages") or [])
+                    for ref, reason in failed_photos:
+                        row_msgs.append({
+                            "level": "warning",
+                            "field": "photo",
+                            "text": f"Photo fetch failed ({ref}): {reason}",
+                        })
+                        new_rejected[ref] = "over 10 MB" if "exceed" in str(reason).lower() else str(reason)
+                    sb.table("catalogue_import_rows").update({"messages": row_msgs}).eq("id", row["id"]).execute()
 
                 # Insert into products
                 insert_res = sb.table("products").insert(prod_data).execute()
@@ -201,7 +224,7 @@ async def commit_catalogue_import_job(
 
                 # Photo update rules
                 photo_refs = row.get("photo_refs") or []
-                raw_url, extra_urls = _resolve_photo_urls(
+                raw_url, extra_urls, failed_photos = await _resolve_photo_urls(
                     wholesaler_id, job_id, photo_refs, stored_photos
                 )
                 if raw_url:
@@ -222,6 +245,17 @@ async def commit_catalogue_import_job(
                             current_images.append(eu)
                     update_payload["images"] = current_images
 
+                if failed_photos:
+                    row_msgs = list(row.get("messages") or [])
+                    for ref, reason in failed_photos:
+                        row_msgs.append({
+                            "level": "warning",
+                            "field": "photo",
+                            "text": f"Photo fetch failed ({ref}): {reason}",
+                        })
+                        new_rejected[ref] = "over 10 MB" if "exceed" in str(reason).lower() else str(reason)
+                    sb.table("catalogue_import_rows").update({"messages": row_msgs}).eq("id", row["id"]).execute()
+
                 # Update product in database
                 sb.table("products").update(update_payload).eq("id", existing["id"]).execute()
                 sb.table("catalogue_import_rows").update(
@@ -231,10 +265,18 @@ async def commit_catalogue_import_job(
 
     # 5. Mark job as done
     now_iso = datetime.now(timezone.utc).isoformat()
-    sb.table("catalogue_import_jobs").update({
+    job_update_payload: dict[str, Any] = {
         "status": "done",
         "committed_at": now_iso,
-    }).eq("id", job_id).execute()
+    }
+    if new_rejected:
+        curr_ps = dict(job.get("photo_summary") or {})
+        curr_rej = dict(curr_ps.get("rejected") or {})
+        curr_rej.update(new_rejected)
+        curr_ps["rejected"] = curr_rej
+        job_update_payload["photo_summary"] = curr_ps
+
+    sb.table("catalogue_import_jobs").update(job_update_payload).eq("id", job_id).execute()
 
     # 6. Save or update wholesaler import profile
     await _update_or_create_profile(sb, job, wholesaler_id)
@@ -275,8 +317,12 @@ async def _commit_images_only_job(
                 target_prod = existing_by_code[matched_code]
                 file_key = f"import_{job['id']}_{uuid.uuid4().hex[:8]}.jpg"
                 storage_path = f"raw/{wholesaler_id}/{file_key}"
-                pub_url = upload_file_to_storage(
-                    img_bytes, bucket="plant-images", path=storage_path, content_type=mime
+                pub_url = await asyncio.to_thread(
+                    upload_file_to_storage,
+                    img_bytes,
+                    bucket="plant-images",
+                    path=storage_path,
+                    content_type=mime,
                 )
 
                 if not target_prod.get("raw_image_url") and not is_extra:
@@ -362,15 +408,82 @@ def _build_update_payload(
     }
 
 
-def _resolve_photo_urls(
+PHOTO_SEMAPHORE = asyncio.Semaphore(4)
+
+
+async def _resolve_single_photo_ref(
+    wholesaler_id: str,
+    job_id: str,
+    ref: str,
+    photos_map: dict[str, tuple[bytes, str]],
+) -> tuple[Optional[str], Optional[tuple[str, str]]]:
+    """
+    Resolves a single photo ref.
+    Returns (uploaded_url, None) on success, or (None, (ref, reason)) on failure.
+    NEVER returns the un-uploaded or un-fetched ref as an image URL.
+    """
+    import os
+    base_ref = os.path.basename(ref)
+    hit = (
+        photos_map.get(ref)
+        or photos_map.get(ref.lower())
+        or photos_map.get(ref.strip())
+        or photos_map.get(ref.strip().lower())
+        or photos_map.get(base_ref)
+        or photos_map.get(base_ref.lower())
+        or photos_map.get(base_ref.strip())
+        or photos_map.get(base_ref.strip().lower())
+    )
+    if hit:
+        img_bytes, mime = hit
+        file_key = f"import_{job_id}_{uuid.uuid4().hex[:8]}.jpg"
+        storage_path = f"raw/{wholesaler_id}/{file_key}"
+        try:
+            pub_url = await asyncio.to_thread(
+                upload_file_to_storage, img_bytes, bucket="plant-images", path=storage_path, content_type=mime
+            )
+            return pub_url, None
+        except Exception as exc:
+            logger.error(f"Failed to upload photo {ref} to plant-images: {exc}")
+            return None, (ref, str(exc))
+
+    if ref.lower().startswith("http://") or ref.lower().startswith("https://"):
+        try:
+            cached = get_cached_photo_url(ref)
+            if cached:
+                clean_bytes, clean_mime = cached
+            else:
+                async with PHOTO_SEMAPHORE:
+                    data, mime = await asyncio.to_thread(safe_fetch_image, ref)
+                    clean_bytes, clean_mime = await asyncio.to_thread(process_and_strip_exif, data)
+                    cache_photo_url(ref, clean_bytes, clean_mime)
+
+            file_key = f"import_{job_id}_{uuid.uuid4().hex[:8]}.jpg"
+            storage_path = f"raw/{wholesaler_id}/{file_key}"
+            pub_url = await asyncio.to_thread(
+                upload_file_to_storage,
+                clean_bytes,
+                bucket="plant-images",
+                path=storage_path,
+                content_type=clean_mime,
+            )
+            return pub_url, None
+        except Exception as exc:
+            logger.warning(f"Failed to fetch/upload URL photo {ref}: {exc}")
+            return None, (ref, str(exc))
+
+    return None, (ref, "file not found in upload")
+
+
+async def _resolve_photo_urls(
     wholesaler_id: str,
     job_id: str,
     photo_refs: list[str],
     stored_photos: Optional[dict[str, tuple[bytes, str]]],
-) -> tuple[Optional[str], list[str]]:
-    """Upload photos to plant-images storage bucket and return (raw_image_url, [images])."""
+) -> tuple[Optional[str], list[str], list[tuple[str, str]]]:
+    """Upload photos to plant-images storage bucket and return (main_url, extra_urls, failed_photos)."""
     if not photo_refs:
-        return None, []
+        return None, [], []
 
     import os
     photos_map: dict[str, tuple[bytes, str]] = {}
@@ -388,54 +501,19 @@ def _resolve_photo_urls(
 
     main_url: Optional[str] = None
     extra_urls: list[str] = []
+    failed_photos: list[tuple[str, str]] = []
 
     for idx, ref in enumerate(photo_refs):
-        base_ref = os.path.basename(ref)
-        hit = (
-            photos_map.get(ref)
-            or photos_map.get(ref.lower())
-            or photos_map.get(ref.strip())
-            or photos_map.get(ref.strip().lower())
-            or photos_map.get(base_ref)
-            or photos_map.get(base_ref.lower())
-            or photos_map.get(base_ref.strip())
-            or photos_map.get(base_ref.strip().lower())
-        )
-        if hit:
-            img_bytes, mime = hit
-            file_key = f"import_{job_id}_{uuid.uuid4().hex[:8]}.jpg"
-            storage_path = f"raw/{wholesaler_id}/{file_key}"
-            try:
-                pub_url = upload_file_to_storage(
-                    img_bytes, bucket="plant-images", path=storage_path, content_type=mime
-                )
-                if idx == 0:
-                    main_url = pub_url
-                else:
-                    extra_urls.append(pub_url)
-            except Exception as exc:
-                logger.error(f"Failed to upload photo {ref} to plant-images: {exc}")
-        elif ref.lower().startswith("http://") or ref.lower().startswith("https://"):
-            try:
-                img_bytes, mime = safe_fetch_image(ref)
-                clean_bytes, clean_mime = process_and_strip_exif(img_bytes)
-                file_key = f"import_{job_id}_{uuid.uuid4().hex[:8]}.jpg"
-                storage_path = f"raw/{wholesaler_id}/{file_key}"
-                pub_url = upload_file_to_storage(
-                    clean_bytes, bucket="plant-images", path=storage_path, content_type=clean_mime
-                )
-                if idx == 0:
-                    main_url = pub_url
-                else:
-                    extra_urls.append(pub_url)
-            except Exception as exc:
-                logger.warning(f"Failed to fetch/upload URL photo {ref}: {exc}")
-                if idx == 0 and not main_url:
-                    main_url = ref
-                else:
-                    extra_urls.append(ref)
+        pub_url, failure = await _resolve_single_photo_ref(wholesaler_id, job_id, ref, photos_map)
+        if pub_url:
+            if idx == 0 and main_url is None:
+                main_url = pub_url
+            else:
+                extra_urls.append(pub_url)
+        elif failure:
+            failed_photos.append(failure)
 
-    return main_url, extra_urls
+    return main_url, extra_urls, failed_photos
 
 
 async def _update_or_create_profile(
