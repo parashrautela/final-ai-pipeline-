@@ -43,6 +43,10 @@ from app.services.catalogue_import.photos import (
     process_loose_files,
 )
 from app.services.catalogue_import.reader import RawRow, read_source_file
+from app.services.catalogue_import.safe_fetch import (
+    StorageSecurityError,
+    validate_wholesaler_storage_path,
+)
 from app.services.storage import download_from_storage
 
 router = APIRouter(prefix="/catalogue-import", tags=["catalogue-import"])
@@ -100,10 +104,33 @@ async def create_import_job(
     """Create a new catalogue import job in 'uploaded' status."""
     sb = get_supabase()
 
+    # Validate storage paths to enforce tenant isolation and prevent directory traversal
+    validated_files = []
+    if req.source_files:
+        for f in req.source_files:
+            raw_path = f.get("path")
+            try:
+                norm_path = validate_wholesaler_storage_path(raw_path, user_id)
+                validated_files.append({**f, "path": norm_path})
+            except StorageSecurityError as exc:
+                raise HTTPException(status_code=403, detail=str(exc))
+
+    # Validate mapping profile ownership
+    if req.profile_id:
+        prof_res = (
+            sb.table("catalogue_import_profiles")
+            .select("id")
+            .eq("id", req.profile_id)
+            .eq("wholesaler_id", user_id)
+            .execute()
+        )
+        if not prof_res.data:
+            raise HTTPException(status_code=403, detail="Profile not found or access denied.")
+
     payload = {
         "wholesaler_id": user_id,
         "source_kind": req.source_kind,
-        "source_files": req.source_files,
+        "source_files": validated_files if req.source_files is not None else None,
         "gsheet_url": req.gsheet_url,
         "profile_id": req.profile_id,
         "status": "uploaded",
@@ -142,7 +169,10 @@ async def read_job(
                 None,
             )
             if sheet_file and job["source_kind"] == "file":
-                path = sheet_file["path"]
+                try:
+                    path = validate_wholesaler_storage_path(sheet_file["path"], user_id)
+                except StorageSecurityError as exc:
+                    raise HTTPException(status_code=403, detail=str(exc))
                 sheet_bytes = await asyncio.to_thread(download_from_storage, "catalogue-imports", path)
                 sheet_name = sheet_file["name"]
 
@@ -226,9 +256,17 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
     # 1. Look for existing profile for this wholesaler
     profile = None
     if job.get("profile_id"):
-        prof_res = sb.table("catalogue_import_profiles").select("*").eq("id", job["profile_id"]).execute()
+        prof_res = (
+            sb.table("catalogue_import_profiles")
+            .select("*")
+            .eq("id", job["profile_id"])
+            .eq("wholesaler_id", user_id)
+            .execute()
+        )
         if prof_res.data:
             profile = prof_res.data[0]
+        else:
+            raise HTTPException(status_code=403, detail="Profile not found or access denied.")
 
     # 2. Re-read raw source to get RawSourceResult
     sheet_bytes = None
@@ -242,7 +280,10 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
             None,
         )
         if sheet_file:
-            path = sheet_file["path"]
+            try:
+                path = validate_wholesaler_storage_path(sheet_file["path"], user_id)
+            except StorageSecurityError as exc:
+                raise HTTPException(status_code=403, detail=str(exc))
             sheet_bytes = await asyncio.to_thread(download_from_storage, "catalogue-imports", path)
             sheet_name = sheet_file["name"]
 
@@ -287,7 +328,11 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
     files = job.get("source_files") or []
     zip_file = next((f for f in files if f.get("name", "").lower().endswith(".zip")), None)
     if zip_file:
-        zip_bytes = await asyncio.to_thread(download_from_storage, "catalogue-imports", zip_file["path"])
+        try:
+            zip_path = validate_wholesaler_storage_path(zip_file["path"], user_id)
+        except StorageSecurityError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        zip_bytes = await asyncio.to_thread(download_from_storage, "catalogue-imports", zip_path)
 
     valid_photos = []
     if zip_bytes:

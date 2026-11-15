@@ -190,3 +190,20 @@ def test_a2_full_merge_matches_answer_key():
     for code, expected_act in expected_actions.items():
         got = got_actions.get(code.upper())
         assert got == expected_act, f"Action mismatch for {code}: expected {expected_act}, got {got}"
+
+
+def test_net_weight_calculated_when_stone_weight_is_blank():
+    """Item 3: Plan Section 6: If net is missing and gross is present, net = gross - (stone or 0).
+    A blank stone weight counts as 0, so net = gross with warning 'net calculated'."""
+    raw = RawRow(
+        sheet="Sheet1",
+        row_number=1,
+        raw={"Code": "BJ-1001", "Gross": "5.2"},
+    )
+    col_map = {"Code": "product_code", "Gross": "gross_weight"}
+    norm = normalize_row(raw, col_map, {})
+    assert norm.gross_weight == 5.2
+    assert norm.stone_weight is None
+    assert norm.net_weight == 5.2
+    assert any("net weight calculated as gross - stone" in m["text"] for m in norm.messages)
+

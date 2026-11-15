@@ -141,3 +141,47 @@ def test_build_update_payload_preserves_extra_attributes():
     assert payload["extra_attributes"] == {"Karigar": "Sunil", "Remarks": "Repeat order 3x"}
     assert payload["import_snapshot"]["extra_attributes"] == {"Karigar": "Sunil", "Remarks": "Repeat order 3x"}
 
+
+@pytest.mark.asyncio
+async def test_api_cross_tenant_file_path_rejected():
+    """Item 1: Wholesaler A cannot create an import job pointing at Wholesaler B's file."""
+    from fastapi import HTTPException
+    from app.routers.catalogue_import import CreateJobRequest, create_import_job
+
+    user_a = "e21f5582-1cac-4e33-8fc6-1c582edd655b"
+    user_b = "fb20d512-d17b-4a3d-a793-9cce8a1eed5b"
+
+    req = CreateJobRequest(
+        source_kind="file",
+        source_files=[{"name": "secret.xlsx", "path": f"{user_b}/secret.xlsx"}],
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await create_import_job(req=req, user_id=user_a)
+    assert exc_info.value.status_code == 403
+    assert "does not belong to wholesaler" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_api_cross_tenant_profile_rejected():
+    """Item 2: Wholesaler A cannot use Wholesaler B's mapping profile."""
+    from fastapi import HTTPException
+    from app.routers.catalogue_import import CreateJobRequest, create_import_job
+
+    user_a = "e21f5582-1cac-4e33-8fc6-1c582edd655b"
+    fake_b_profile_id = "33333333-3333-3333-3333-333333333333"
+
+    mock_sb = MagicMock()
+    mock_sb.table().select().eq().eq().execute.return_value = MagicMock(data=[])
+
+    req = CreateJobRequest(
+        source_kind="file",
+        profile_id=fake_b_profile_id,
+        source_files=[{"name": "stock.xlsx", "path": f"{user_a}/stock.xlsx"}],
+    )
+    with patch("app.routers.catalogue_import.get_supabase", return_value=mock_sb):
+        with pytest.raises(HTTPException) as exc_info:
+            await create_import_job(req=req, user_id=user_a)
+        assert exc_info.value.status_code == 403
+        assert "Profile not found or access denied" in exc_info.value.detail
+
+

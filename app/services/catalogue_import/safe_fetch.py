@@ -26,6 +26,7 @@ from __future__ import annotations
 import http.client
 import io
 import ipaddress
+import posixpath
 import re
 import socket
 import ssl
@@ -296,3 +297,37 @@ def safe_fetch_image(url: str, timeout: float = SOCKET_TIMEOUT) -> tuple[bytes, 
                     sock.close()
                 except Exception:
                     pass
+
+
+class StorageSecurityError(ValueError):
+    """Raised when an uploaded storage path is invalid, traverses directories, or violates tenant isolation."""
+    pass
+
+
+def validate_wholesaler_storage_path(path: str, user_id: str) -> str:
+    """
+    Validates and normalizes storage path in catalogue-imports bucket.
+    Must start with '{user_id}/' and cannot contain '..' traversal segments.
+    Raises StorageSecurityError if invalid.
+    """
+    if not path or not isinstance(path, str):
+        raise StorageSecurityError("Invalid or empty storage path.")
+
+    clean = path.strip()
+    if clean.startswith("/"):
+        raise StorageSecurityError("Storage path must be relative, not absolute.")
+
+    raw_parts = clean.split("/")
+    if ".." in raw_parts:
+        raise StorageSecurityError("Path traversal ('..') detected in storage path.")
+
+    norm_path = posixpath.normpath(clean)
+
+    expected_prefix = f"{user_id}/"
+    if not norm_path.startswith(expected_prefix):
+        raise StorageSecurityError(
+            f"Access denied: storage path '{norm_path}' does not belong to wholesaler '{user_id}'."
+        )
+
+    return norm_path
+

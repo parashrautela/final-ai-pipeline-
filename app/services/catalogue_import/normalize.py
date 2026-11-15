@@ -365,9 +365,9 @@ def normalize_row(
                 "text": f"stone weight ({norm.stone_weight}g) is greater than gross weight ({norm.gross_weight}g)",
             })
 
-        # Calculate net weight if missing (only when stone weight is known)
-        if norm.net_weight is None and norm.stone_weight is not None and not any(m.get("field") == "net_weight" for m in norm.messages):
-            st_val = norm.stone_weight
+        # Calculate net weight if missing (blank stone counts as 0 -> net = gross)
+        if norm.net_weight is None and not any(m.get("field") == "net_weight" for m in norm.messages):
+            st_val = norm.stone_weight or 0.0
             if st_val <= norm.gross_weight:
                 norm.net_weight = round(norm.gross_weight - st_val, 4)
                 norm.messages.append({

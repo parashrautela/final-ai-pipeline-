@@ -9,11 +9,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.catalogue_import.safe_fetch import (
-    SSRFError,
     PhotoFetchError,
+    SSRFError,
+    StorageSecurityError,
     is_ip_safe,
     rewrite_share_url,
     safe_fetch_image,
+    validate_wholesaler_storage_path,
 )
 import ipaddress
 
@@ -126,3 +128,32 @@ def test_redirect_to_internal_ip_blocked():
 
         with pytest.raises(SSRFError, match="only HTTPS URLs are permitted"):
             safe_fetch_image("https://example.com/redirect-to-secret")
+
+
+def test_storage_path_cross_tenant_access_blocked():
+    """Wholesaler A cannot access Wholesaler B's files in catalogue-imports bucket."""
+    user_a = "e21f5582-1cac-4e33-8fc6-1c582edd655b"
+    user_b = "fb20d512-d17b-4a3d-a793-9cce8a1eed5b"
+
+    with pytest.raises(StorageSecurityError, match="does not belong to wholesaler"):
+        validate_wholesaler_storage_path(f"{user_b}/imports/stock.xlsx", user_a)
+
+
+def test_storage_path_traversal_blocked():
+    """Paths containing '..' traversal segments are rejected."""
+    user_a = "e21f5582-1cac-4e33-8fc6-1c582edd655b"
+    user_b = "fb20d512-d17b-4a3d-a793-9cce8a1eed5b"
+
+    with pytest.raises(StorageSecurityError, match="Path traversal"):
+        validate_wholesaler_storage_path(f"{user_a}/../{user_b}/stock.xlsx", user_a)
+
+    with pytest.raises(StorageSecurityError, match="relative, not absolute"):
+        validate_wholesaler_storage_path(f"/{user_a}/stock.xlsx", user_a)
+
+
+def test_storage_path_valid_wholesaler():
+    """Valid path under wholesaler's own folder is accepted and normalized."""
+    user_a = "e21f5582-1cac-4e33-8fc6-1c582edd655b"
+    valid_path = f"{user_a}/uploads/sub/data.xlsx"
+    assert validate_wholesaler_storage_path(valid_path, user_a) == valid_path
+
