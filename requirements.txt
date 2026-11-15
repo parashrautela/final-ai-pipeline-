@@ -42,3 +42,12 @@ Pillow==12.3.0
 onnxruntime==1.23.2
 numpy==2.2.6
 cryptography>=43.0.0
+
+# Bulk catalogue import: parsing spreadsheets and encodings
+openpyxl==3.1.5
+xlrd==2.0.1
+odfpy==1.4.1
+charset-normalizer==3.4.1
+pytest==8.3.4
+pytest-asyncio==0.25.2
+
