@@ -157,3 +157,23 @@ def test_storage_path_valid_wholesaler():
     valid_path = f"{user_a}/uploads/sub/data.xlsx"
     assert validate_wholesaler_storage_path(valid_path, user_a) == valid_path
 
+
+def test_storage_path_encoded_traversal_and_backslash_rejected():
+    """Storage paths with % (e.g. %2e%2e, %2f) or backslashes are rejected."""
+    user_a = "e21f5582-1cac-4e33-8fc6-1c582edd655b"
+
+    # URL-encoded traversal
+    with pytest.raises(StorageSecurityError, match="Invalid characters"):
+        validate_wholesaler_storage_path(f"{user_a}/%2e%2e/victim/file.xlsx", user_a)
+
+    with pytest.raises(StorageSecurityError, match="Invalid characters"):
+        validate_wholesaler_storage_path(f"{user_a}/sub%2ffile.xlsx", user_a)
+
+    # Windows backslash traversal
+    with pytest.raises(StorageSecurityError, match="Invalid characters"):
+        validate_wholesaler_storage_path(f"{user_a}\\..\\victim\\file.xlsx", user_a)
+
+    with pytest.raises(StorageSecurityError, match="Invalid characters"):
+        validate_wholesaler_storage_path(f"{user_a}\\sub\\file.xlsx", user_a)
+
+

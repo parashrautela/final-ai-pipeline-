@@ -317,6 +317,9 @@ def validate_wholesaler_storage_path(path: str, user_id: str) -> str:
     if clean.startswith("/"):
         raise StorageSecurityError("Storage path must be relative, not absolute.")
 
+    if "%" in clean or "\\" in clean:
+        raise StorageSecurityError("Invalid characters ('%' or '\\') detected in storage path.")
+
     raw_parts = clean.split("/")
     if ".." in raw_parts:
         raise StorageSecurityError("Path traversal ('..') detected in storage path.")
