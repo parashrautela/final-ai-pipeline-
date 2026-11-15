@@ -644,24 +644,39 @@ async def commit_job_endpoint(
     if not claim_res.data:
         fresh = await get_owned_job(job_id, user_id)
         if fresh.get("status") == "committing":
-            existing_task = _commit_tasks.get(job_id)
-            if existing_task:
+            created_at_str = fresh.get("created_at")
+            is_stale = False
+            if created_at_str:
                 try:
-                    summary = await asyncio.shield(existing_task)
-                    return {"job_id": job_id, "status": "done", "summary": summary}
+                    dt = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                    age_seconds = (datetime.now(timezone.utc) - dt).total_seconds()
+                    if age_seconds > 600:  # > 10 minutes
+                        is_stale = True
                 except Exception:
                     pass
-            return {"job_id": job_id, "status": "committing", "message": "Commit already in progress."}
-        if fresh.get("status") == "done":
+
+            if is_stale and (_commit_tasks.get(job_id) is None or _commit_tasks[job_id].done()):
+                logger.warning(f"Re-claiming stale stuck job {job_id} in status committing")
+            else:
+                existing_task = _commit_tasks.get(job_id)
+                if existing_task and not existing_task.done():
+                    try:
+                        summary = await asyncio.shield(existing_task)
+                        return {"job_id": job_id, "status": "done", "summary": summary}
+                    except Exception:
+                        pass
+                return {"job_id": job_id, "status": "committing", "message": "Commit already in progress."}
+        elif fresh.get("status") == "done":
             return {"job_id": job_id, "status": fresh["status"], "summary": fresh.get("summary") or {}}
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job cannot be committed in status '{fresh.get('status')}'. Must be 'ready'."
-        )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job cannot be committed in status '{fresh.get('status')}'. Must be 'ready'."
+            )
 
     async def _do_commit():
         try:
-            return await commit_catalogue_import_job(job_id, user_id)
+            return await commit_catalogue_import_job(job_id, user_id, already_claimed=True)
         finally:
             _commit_tasks.pop(job_id, None)
 

@@ -40,6 +40,7 @@ async def commit_catalogue_import_job(
     job_id: str,
     wholesaler_id: str,
     stored_photos: Optional[dict[str, tuple[bytes, str]]] = None,
+    already_claimed: bool = False,
 ) -> dict[str, Any]:
     """Execute chunked, idempotent commit of an import job into products table.
 
@@ -65,19 +66,20 @@ async def commit_catalogue_import_job(
     if job["status"] not in ("ready", "committing"):
         raise CommitError(f"Job cannot be committed in status '{job['status']}'. Must be 'ready'.")
 
-    # Atomic claim: update status to committing only if it is currently ready
-    claim_res = sb.table("catalogue_import_jobs").update(
-        {"status": "committing"}
-    ).eq("id", job_id).eq("status", "ready").execute()
+    if not already_claimed:
+        # Atomic claim: update status to committing only if it is currently ready
+        claim_res = sb.table("catalogue_import_jobs").update(
+            {"status": "committing"}
+        ).eq("id", job_id).eq("status", "ready").execute()
 
-    if not claim_res.data:
-        # Not claimed by us (or already committing / done)
-        fresh = sb.table("catalogue_import_jobs").select("*").eq("id", job_id).execute()
-        current = fresh.data[0] if fresh.data else job
-        if current.get("status") in ("done", "committing"):
-            logger.info(f"Job {job_id} is already in status '{current.get('status')}'. Returning summary.")
-            return current.get("summary") or {}
-        raise CommitError(f"Job cannot be committed in status '{current.get('status')}'. Must be 'ready'.")
+        if not claim_res.data:
+            # Not claimed by us (or already committing / done)
+            fresh = sb.table("catalogue_import_jobs").select("*").eq("id", job_id).execute()
+            current = fresh.data[0] if fresh.data else job
+            if current.get("status") in ("done", "committing"):
+                logger.info(f"Job {job_id} is already in status '{current.get('status')}'. Returning summary.")
+                return current.get("summary") or {}
+            raise CommitError(f"Job cannot be committed in status '{current.get('status')}'. Must be 'ready'.")
 
     # 2. Fetch existing products for this wholesaler
     existing_res = sb.table("products").select(

@@ -752,7 +752,7 @@ async def test_concurrent_double_commit_atomic_claim_item_16():
     commit_count = 0
     claim_count = 0
 
-    async def mock_commit_impl(jid, wid):
+    async def mock_commit_impl(jid, wid, **kwargs):
         nonlocal commit_count
         commit_count += 1
         await asyncio.sleep(0.04)
