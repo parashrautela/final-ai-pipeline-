@@ -205,12 +205,48 @@ def analyze_import(
                     matched = [s.name for s in read_result.sheets if s.name.lower() in ans_val.lower()]
                     sheet_rules["sheets"] = matched or [ans_val]
         elif ans_key.startswith("q_val_"):
-            # e.g. q_val_temple -> "traditional", q_val_21k -> "22k"
-            parts = ans_key.split("_", 3)
-            if len(parts) >= 4:
-                _, _, field_name, raw_token = parts
-                if field_name in value_maps:
-                    value_maps[field_name][raw_token.lower()] = str(ans_val).strip().lower()
+            # Supports q_val_purity_<token>, q_val_metal_purity_<token>,
+            # q_val_type_<token>, q_val_jewellery_type_<token>,
+            # q_val_style_<token>
+            suffix = ans_key[len("q_val_"):]
+            target_field = None
+            raw_token = None
+            for prefix, mapped_field in [
+                ("metal_purity_", "metal_purity"),
+                ("purity_", "metal_purity"),
+                ("jewellery_type_", "jewellery_type"),
+                ("type_", "jewellery_type"),
+                ("style_", "style"),
+            ]:
+                if suffix.startswith(prefix):
+                    target_field = mapped_field
+                    raw_token = suffix[len(prefix):]
+                    break
+
+            if not target_field:
+                parts = suffix.split("_", 1)
+                if len(parts) == 2:
+                    fld, tok = parts
+                    if fld in value_maps:
+                        target_field = fld
+                        raw_token = tok
+                    elif fld == "purity":
+                        target_field = "metal_purity"
+                        raw_token = tok
+                    elif fld == "type":
+                        target_field = "jewellery_type"
+                        raw_token = tok
+                elif len(parts) == 1:
+                    target_field = "style"
+                    raw_token = parts[0]
+
+            if target_field and raw_token and target_field in value_maps:
+                val_mapped = str(ans_val).strip().lower()
+                if "skip" in val_mapped:
+                    val_mapped = "skip"
+                elif "leave blank" in val_mapped:
+                    val_mapped = "leave_blank"
+                value_maps[target_field][raw_token.lower()] = val_mapped
         elif ans_key.startswith("q_col_"):
             # e.g. q_col_wt -> "gross_weight"
             parts = ans_key.split("_", 2)

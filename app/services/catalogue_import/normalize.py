@@ -278,6 +278,21 @@ def normalize_row(
         if canon_pur in CANONICAL_PURITIES:
             norm.metal_purity = canon_pur
 
+    # Cross-inference between category and purity if one was missing
+    if not norm.category and norm.metal_purity:
+        if norm.metal_purity in ("22k", "18k", "14k", "24k"):
+            norm.category = "gold"
+        elif norm.metal_purity == "925":
+            norm.category = "silver"
+        elif norm.metal_purity == "950pt":
+            norm.category = "platinum"
+
+    if not norm.metal_purity and norm.category:
+        if norm.category == "silver":
+            norm.metal_purity = "925"
+        elif norm.category == "platinum":
+            norm.metal_purity = "950pt"
+
     # 6. Style
     style_col = next((c for c in raw if column_map.get(c) == "style"), None)
     raw_style = str(raw.get(style_col, "")).strip() if style_col else ""
@@ -350,9 +365,9 @@ def normalize_row(
                 "text": f"stone weight ({norm.stone_weight}g) is greater than gross weight ({norm.gross_weight}g)",
             })
 
-        # Calculate net weight if missing
-        if norm.net_weight is None and not any(m.get("field") == "net_weight" for m in norm.messages):
-            st_val = norm.stone_weight or 0.0
+        # Calculate net weight if missing (only when stone weight is known)
+        if norm.net_weight is None and norm.stone_weight is not None and not any(m.get("field") == "net_weight" for m in norm.messages):
+            st_val = norm.stone_weight
             if st_val <= norm.gross_weight:
                 norm.net_weight = round(norm.gross_weight - st_val, 4)
                 norm.messages.append({

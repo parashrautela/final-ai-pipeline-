@@ -119,3 +119,25 @@ async def test_private_google_sheet_friendly_message():
     with patch("httpx.AsyncClient.get", return_value=fake_resp):
         with pytest.raises(GoogleSheetError, match="Open the sheet → Share"):
             await fetch_google_sheet_xlsx(bad_url)
+
+
+def test_build_update_payload_preserves_extra_attributes():
+    """Verify that updating a product preserves existing extra_attributes if incoming sheet has none."""
+    from app.services.catalogue_import.commit import _build_update_payload
+
+    existing = {
+        "id": "prod-1",
+        "title": "Old Title",
+        "extra_attributes": {"Karigar": "Sunil", "Remarks": "Repeat order 3x"},
+    }
+    norm = {
+        "title": "New Title",
+        "jewellery_type": "rings",
+        "category": "gold",
+        "extra_attributes": {},
+    }
+
+    payload = _build_update_payload(job_id="job-1", norm=norm, existing=existing)
+    assert payload["extra_attributes"] == {"Karigar": "Sunil", "Remarks": "Repeat order 3x"}
+    assert payload["import_snapshot"]["extra_attributes"] == {"Karigar": "Sunil", "Remarks": "Repeat order 3x"}
+

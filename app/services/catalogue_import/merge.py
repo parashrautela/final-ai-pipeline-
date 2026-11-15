@@ -132,6 +132,7 @@ def merge_rows_with_existing(
     }
 
     seen_codes_in_file: set[str] = set()
+    seen_error_codes: set[str] = set()
 
     for r in rows:
         if r.action == "duplicate_skipped":
@@ -142,7 +143,13 @@ def merge_rows_with_existing(
             continue
         if r.is_error or r.action == "error":
             r.action = "error"
-            summary["error"] += 1
+            code = (r.product_code or "").strip().upper()
+            if code:
+                if code not in seen_error_codes:
+                    seen_error_codes.add(code)
+                    summary["error"] += 1
+            else:
+                summary["error"] += 1
             continue
 
         code = r.product_code.upper() if r.product_code else ""

@@ -313,11 +313,13 @@ def match_value_synonym(field_name: str, raw_value: str) -> tuple[Optional[str],
         if digits == "950":
             return "950pt", 0.95
 
-    # Check words within phrase (e.g. "22k gold ladies ring" -> jewellery_type: "rings")
-    words = re.findall(r"\w+", val_clean)
+    # Check multi-word phrases and words within phrase with word boundaries
+    # (e.g. "silver nose pin" -> jewellery_type: "nosepins", "22k gold ladies ring" -> "rings")
     for canon, syns in field_dict.items():
-        for word in words:
-            if word in syns:
-                return canon, 0.86
+        for syn in sorted(syns, key=len, reverse=True):
+            if len(syn) >= 2:
+                pattern = r"\b" + re.escape(syn.lower()) + r"\b"
+                if re.search(pattern, val_clean):
+                    return canon, 0.88
 
     return None, 0.0

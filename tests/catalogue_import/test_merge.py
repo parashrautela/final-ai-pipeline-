@@ -85,9 +85,10 @@ def test_intra_job_duplicates():
     # Differing values
     d1 = NormalizedRow(sheet="S1", row_number=3, raw={}, product_code="DIFF1", gross_weight=10.0, jewellery_type="rings")
     d2 = NormalizedRow(sheet="S1", row_number=4, raw={}, product_code="DIFF1", gross_weight=12.0, jewellery_type="rings")
-    merge_rows_with_existing([d1, d2], [])
+    sum_diff = merge_rows_with_existing([d1, d2], [])
     assert d1.action == "error"
     assert d2.action == "error"
+    assert sum_diff["error"] == 1  # 1 distinct error product code
     assert any("different values" in m["text"] for m in d1.messages)
 
 

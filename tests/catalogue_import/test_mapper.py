@@ -169,3 +169,19 @@ def test_llm_disabled_mode(monkeypatch):
         m = analyze_import(res)
         assert m.llm_calls == 0
         assert isinstance(m.questions, list)
+
+
+def test_answers_value_maps_purity():
+    """Verify that q_val_purity_21k maps to value_maps['metal_purity']['21k']."""
+    file_path = FIXTURES_DIR / "A1_shree_balaji_stock_register.xlsx"
+    data = file_path.read_bytes()
+    read_res = read_source_file(data, file_path.name)
+
+    answers = {
+        "q_val_purity_21k": "22k",
+        "q_val_style_temple": "traditional",
+    }
+    map_res = analyze_import(read_res, answers=answers)
+    assert map_res.value_maps.get("metal_purity", {}).get("21k") == "22k"
+    assert map_res.value_maps.get("style", {}).get("temple") == "traditional"
+

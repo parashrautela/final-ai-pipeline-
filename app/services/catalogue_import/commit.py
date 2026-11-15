@@ -155,8 +155,14 @@ async def commit_catalogue_import_job(
                 if action == "conflict" and resolution == "mine":
                     # Wholesaler chose to keep app values:
                     # Update snapshot to incoming sheet value so future imports don't conflict again
+                    existing_extra = existing.get("extra_attributes") or {}
+                    incoming_extra = norm.get("extra_attributes") or {}
+                    merged_extra = {**existing_extra, **incoming_extra} if incoming_extra else existing_extra
+                    snapshot = dict(norm)
+                    snapshot["extra_attributes"] = merged_extra
+
                     sb.table("products").update({
-                        "import_snapshot": norm,
+                        "import_snapshot": snapshot,
                         "import_job_id": job_id,
                     }).eq("id", existing["id"]).execute()
                     sb.table("catalogue_import_rows").update(
@@ -169,6 +175,7 @@ async def commit_catalogue_import_job(
                 update_payload = _build_update_payload(
                     job_id=job_id,
                     norm=norm,
+                    existing=existing,
                 )
 
                 # Photo update rules
@@ -306,13 +313,21 @@ def _build_product_payload(
 def _build_update_payload(
     job_id: str,
     norm: dict[str, Any],
+    existing: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Assemble products update dictionary."""
+    existing_extra = (existing.get("extra_attributes") or {}) if existing else {}
+    incoming_extra = norm.get("extra_attributes") or {}
+    merged_extra = {**existing_extra, **incoming_extra} if incoming_extra else existing_extra
+
+    snapshot = dict(norm)
+    snapshot["extra_attributes"] = merged_extra
+
     return {
         "import_job_id": job_id,
-        "import_snapshot": norm,
-        "extra_attributes": norm.get("extra_attributes") or {},
-        "title": norm.get("title") or "",
+        "import_snapshot": snapshot,
+        "extra_attributes": merged_extra,
+        "title": norm.get("title") or (existing.get("title") if existing else "") or "",
         "jewellery_type": norm.get("jewellery_type"),
         "category": norm.get("category"),
         "style": norm.get("style"),
