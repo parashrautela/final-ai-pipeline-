@@ -313,17 +313,18 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
     mapped = await asyncio.to_thread(analyze_import, read_res, profile=profile, answers=answers)
 
     if not mapped.is_ready:
+        questions_payload = [q.to_dict() if hasattr(q, "to_dict") else q for q in mapped.questions]
         # Needs answers
         sb.table("catalogue_import_jobs").update({
             "status": "needs_answers",
-            "questions": mapped.questions,
+            "questions": questions_payload,
             "llm_usage": mapped.llm_usage,
         }).eq("id", job_id).execute()
 
         return {
             "job_id": job_id,
             "status": "needs_answers",
-            "questions": mapped.questions,
+            "questions": questions_payload,
         }
 
     # 4. Ready: Normalize rows

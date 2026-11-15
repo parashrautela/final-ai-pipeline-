@@ -185,3 +185,16 @@ def test_answers_value_maps_purity():
     assert map_res.value_maps.get("metal_purity", {}).get("21k") == "22k"
     assert map_res.value_maps.get("style", {}).get("temple") == "traditional"
 
+
+def test_mapping_result_llm_usage_attribute():
+    """Verify that MappingResult exposes llm_usage dict for db logging."""
+    file_path = FIXTURES_DIR / "A1_shree_balaji_stock_register.xlsx"
+    data = file_path.read_bytes()
+    read_res = read_source_file(data, file_path.name)
+    map_res = analyze_import(read_res)
+    assert hasattr(map_res, "llm_usage")
+    assert isinstance(map_res.llm_usage, dict)
+    assert "calls" in map_res.llm_usage
+    assert "tokens" in map_res.llm_usage
+
+

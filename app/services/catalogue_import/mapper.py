@@ -66,6 +66,14 @@ class MappingResult:
     llm_tokens: dict[str, int] = field(default_factory=dict)
     is_ready: bool = False
 
+    @property
+    def llm_usage(self) -> dict[str, Any]:
+        return {
+            "calls": self.llm_calls,
+            "tokens": self.llm_tokens,
+        }
+
+
 
 def extract_sample_values(read_result: ReadResult, col_name: str, limit: int = 3) -> list[str]:
     """Returns up to `limit` non-empty distinct sample values for a column."""
