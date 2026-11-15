@@ -349,6 +349,10 @@ class Settings(BaseSettings):
     APNS_PRIVATE_KEY: str = ""  # Raw .p8 PEM string, file path, or base64
     APNS_ENVIRONMENT: str = "development"  # "development" or "production"
 
+    # Bulk catalogue import
+    CATALOGUE_IMPORT_MODEL: str = "gpt-4o-mini"
+    CATALOGUE_IMPORT_LLM_ENABLED: bool = True
+
     class Config:
         env_file = ".env"
         extra = "ignore"  # silently drop any unknown keys from .env
