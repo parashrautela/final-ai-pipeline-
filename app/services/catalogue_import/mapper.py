@@ -92,11 +92,40 @@ def check_profile_match(headers: list[str], profile: dict[str, Any]) -> bool:
     profile_fp = profile.get("header_fingerprint", [])
     if not profile_fp or not headers:
         return False
-    norm_headers = {normalize_header_text(h) for h in headers}
-    norm_profile = {normalize_header_text(h) for h in profile_fp}
+    norm_headers = {normalize_header_text(h) for h in headers if h}
+    norm_profile = {normalize_header_text(h) for h in profile_fp if h}
     common = norm_headers & norm_profile
     ratio = len(common) / max(len(norm_headers), 1)
     return ratio >= 0.70
+
+
+def find_best_matching_profile(
+    headers: list[str],
+    profiles: list[dict[str, Any]],
+    threshold: float = 0.70,
+) -> Optional[dict[str, Any]]:
+    """Finds the profile with the highest header overlap ratio >= threshold."""
+    if not headers or not profiles:
+        return None
+    norm_headers = {normalize_header_text(h) for h in headers if h}
+    if not norm_headers:
+        return None
+
+    best_profile = None
+    best_ratio = 0.0
+
+    for p in profiles:
+        profile_fp = p.get("header_fingerprint") or []
+        if not profile_fp:
+            continue
+        norm_profile = {normalize_header_text(h) for h in profile_fp if h}
+        common = norm_headers & norm_profile
+        ratio = len(common) / max(len(norm_headers), 1)
+        if ratio >= threshold and ratio > best_ratio:
+            best_ratio = ratio
+            best_profile = p
+
+    return best_profile
 
 
 def try_llm_column_mapping(

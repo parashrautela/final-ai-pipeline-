@@ -32,7 +32,7 @@ from app.db.repository import get_supabase
 from app.logging import logger
 from app.services.catalogue_import.commit import commit_catalogue_import_job
 from app.services.catalogue_import.gsheet import GoogleSheetError, fetch_google_sheet_xlsx
-from app.services.catalogue_import.mapper import analyze_import
+from app.services.catalogue_import.mapper import analyze_import, find_best_matching_profile
 from app.services.catalogue_import.merge import detect_intra_job_duplicates, merge_rows_with_existing
 from app.services.catalogue_import.normalize import NormalizedRow, normalize_row
 from app.services.catalogue_import.photos import (
@@ -308,6 +308,28 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
     if sheet_bytes:
         read_res = await asyncio.to_thread(read_source_file, sheet_bytes, sheet_name)
 
+    # 2.5 Auto-match existing profile by header fingerprint if no profile_id was provided
+    headers: list[str] = []
+    if read_res:
+        for s in read_res.sheets:
+            if s.is_product_sheet and not s.is_hidden:
+                for h in s.headers:
+                    if h and h not in headers:
+                        headers.append(h)
+
+    if profile is None and read_res and headers:
+        prof_list_res = (
+            sb.table("catalogue_import_profiles")
+            .select("*")
+            .eq("wholesaler_id", user_id)
+            .execute()
+        )
+        matched_profile = find_best_matching_profile(headers, prof_list_res.data or [])
+        if matched_profile:
+            profile = matched_profile
+            job["profile_id"] = matched_profile["id"]
+            sb.table("catalogue_import_jobs").update({"profile_id": matched_profile["id"]}).eq("id", job_id).execute()
+
     # 3. Analyze mapping
     answers = job.get("answers") or {}
     mapped = await asyncio.to_thread(analyze_import, read_res, profile=profile, answers=answers)
@@ -326,6 +348,34 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
             "status": "needs_answers",
             "questions": questions_payload,
         }
+
+    # If profile exists, keep it updated with confirmed mapping; otherwise create a new profile row
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if job.get("profile_id"):
+        sb.table("catalogue_import_profiles").update({
+            "column_map": mapped.column_map,
+            "value_maps": mapped.value_maps,
+            "sheet_rules": mapped.sheet_rules,
+            "updated_at": now_iso,
+        }).eq("id", job["profile_id"]).execute()
+    elif headers:
+        prof_name = sheet_name.rsplit(".", 1)[0].replace("_", " ").title() if sheet_name else "Import Profile"
+        new_prof_payload = {
+            "wholesaler_id": user_id,
+            "name": prof_name,
+            "header_fingerprint": headers,
+            "column_map": mapped.column_map,
+            "value_maps": mapped.value_maps,
+            "sheet_rules": mapped.sheet_rules,
+            "gsheet_url": job.get("gsheet_url"),
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        ins_prof = sb.table("catalogue_import_profiles").insert(new_prof_payload).execute()
+        if ins_prof.data:
+            new_id = ins_prof.data[0]["id"]
+            job["profile_id"] = new_id
+            sb.table("catalogue_import_jobs").update({"profile_id": new_id}).eq("id", job_id).execute()
 
     # 4. Ready: Normalize rows
     norm_rows: list[NormalizedRow] = []

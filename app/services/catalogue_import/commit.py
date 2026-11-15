@@ -379,9 +379,9 @@ async def _update_or_create_profile(
     job: dict[str, Any],
     wholesaler_id: str,
 ) -> None:
-    """Save or update wholesaler import profile upon successful commit."""
-    answers = job.get("answers") or {}
+    """Save or update wholesaler import profile upon successful commit, writing profile_id back to job."""
     now_iso = datetime.now(timezone.utc).isoformat()
+    job_id = job["id"]
 
     profile_id = job.get("profile_id")
     if profile_id:
@@ -389,6 +389,7 @@ async def _update_or_create_profile(
             "last_synced_at": now_iso,
             "updated_at": now_iso,
         }).eq("id", profile_id).execute()
+        sb.table("catalogue_import_jobs").update({"profile_id": profile_id}).eq("id", job_id).execute()
         return
 
     # Check if a profile already exists for this wholesaler with the same gsheet_url or source
@@ -398,8 +399,10 @@ async def _update_or_create_profile(
             "wholesaler_id", wholesaler_id
         ).eq("gsheet_url", gsheet_url).execute()
         if existing.data:
+            p_id = existing.data[0]["id"]
             sb.table("catalogue_import_profiles").update({
                 "last_synced_at": now_iso,
                 "updated_at": now_iso,
-            }).eq("id", existing.data[0]["id"]).execute()
+            }).eq("id", p_id).execute()
+            sb.table("catalogue_import_jobs").update({"profile_id": p_id}).eq("id", job_id).execute()
             return

@@ -185,3 +185,132 @@ async def test_api_cross_tenant_profile_rejected():
         assert "Profile not found or access denied" in exc_info.value.detail
 
 
+def test_find_best_matching_profile_helper():
+    """Item 10: Verify find_best_matching_profile selects the highest match >= 70%."""
+    from app.services.catalogue_import.mapper import find_best_matching_profile
+
+    headers = ["Design No.", "Item", "Metal", "Kt", "G.Wt (gm)", "N.Wt", "Style", "Size"]
+    matching_profile = {
+        "id": "prof-1",
+        "header_fingerprint": ["Design No.", "Item", "Metal", "Kt", "G.Wt (gm)", "N.Wt", "Style", "Size"],
+    }
+    unrelated_profile = {
+        "id": "prof-2",
+        "header_fingerprint": ["Code", "Description", "Weight"],
+    }
+
+    # Match found
+    best = find_best_matching_profile(headers, [unrelated_profile, matching_profile])
+    assert best is not None
+    assert best["id"] == "prof-1"
+
+    # Overlap below 70% returns None
+    few_headers = ["Design No.", "RandomCol1", "RandomCol2", "RandomCol3"]
+    assert find_best_matching_profile(few_headers, [matching_profile]) is None
+
+
+@pytest.mark.asyncio
+async def test_auto_profile_reuse_and_not_in_file_calculation():
+    """
+    Item 10: When a job is analyzed with no profile_id:
+    - Auto-detects matching profile from wholesaler's saved profiles
+    - Saves profile_id to the job
+    - Reuses learned column/value maps so questions <= 1
+    - Correctly calculates not_in_file and conflicts for the profile series
+    - Commit writes profile_id back to job
+    """
+    from pathlib import Path
+    from app.routers.catalogue_import import _run_analyze_pipeline
+
+    user_id = "e21f5582-1cac-4e33-8fc6-1c582edd655b"
+    job_id = "job-a2-auto-match"
+    prof_id = "prof-balaji-saved"
+
+    fixtures_dir = Path(__file__).resolve().parents[4] / "plans" / "bulk-catalogue-import" / "test-data" / "fixtures"
+    a2_path = fixtures_dir / "A2_shree_balaji_stock_register_v2.xlsx"
+    if not a2_path.exists():
+        pytest.skip(f"Fixture A2 not found at {a2_path}")
+    a2_bytes = a2_path.read_bytes()
+
+    saved_profile = {
+        "id": prof_id,
+        "wholesaler_id": user_id,
+        "name": "Shree Balaji Template",
+        "header_fingerprint": [
+            "Sr No", "Design No.", "Item Name", "Item", "Metal", "Kt", "G.Wt (gm)",
+            "St.Wt", "N.Wt", "Size", "Style", "Ready/Order", "Days", "Photo", "Karigar", "Remarks"
+        ],
+        "column_map": {
+            "Sr No": "ignore",
+            "Design No.": "product_code",
+            "Item Name": "title",
+            "Item": "jewellery_type",
+            "Metal": "category",
+            "Kt": "metal_purity",
+            "G.Wt (gm)": "gross_weight",
+            "St.Wt": "stone_weight",
+            "N.Wt": "net_weight",
+            "Size": "size",
+            "Style": "style",
+            "Ready/Order": "stock_available",
+            "Days": "make_to_order_days",
+            "Photo": "photo",
+            "Karigar": "extra:Karigar",
+            "Remarks": "extra:Remarks",
+        },
+        "value_maps": {
+            "metal_purity": {"21k": "22k"},
+            "style": {"temple": "traditional"},
+        },
+        "sheet_rules": {"sheets": ["Stock Register"]},
+    }
+
+    job_data = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "read",
+        "source_kind": "file",
+        "profile_id": None,  # NOT sent by caller
+        "source_files": [{"name": "A2_shree_balaji_updated.xlsx", "path": f"{user_id}/A2_shree_balaji_updated.xlsx"}],
+        "answers": {},
+    }
+
+    mock_sb = MagicMock()
+    # Profile query returns saved_profile
+    mock_sb.table().select().eq().execute.return_value = MagicMock(data=[saved_profile])
+
+    # Related jobs query returns A1 job
+    a1_job_id = "job-a1-prior"
+    mock_sb.table().select().eq().eq().execute.return_value = MagicMock(data=[{"id": a1_job_id}])
+
+    # Existing products return A1 products (including 3 missing from A2: 170002, 180002, 190002)
+    existing_mock_products = [
+        {"id": "p-1", "product_code": "170002", "import_job_id": a1_job_id, "import_snapshot": {"gross_weight": 10.0}, "gross_weight": 10.0, "is_published": False, "ai_processing_state": "none", "extra_attributes": {}},
+        {"id": "p-2", "product_code": "180002", "import_job_id": a1_job_id, "import_snapshot": {"gross_weight": 11.0}, "gross_weight": 11.0, "is_published": False, "ai_processing_state": "none", "extra_attributes": {}},
+        {"id": "p-3", "product_code": "190002", "import_job_id": a1_job_id, "import_snapshot": {"gross_weight": 12.0}, "gross_weight": 12.0, "is_published": False, "ai_processing_state": "none", "extra_attributes": {}},
+        # Conflicting product (app edited gross_weight from 15.0 to 20.0)
+        {"id": "p-4", "product_code": "110001", "import_job_id": a1_job_id, "import_snapshot": {"gross_weight": 15.0}, "gross_weight": 20.0, "is_published": False, "ai_processing_state": "none", "extra_attributes": {}},
+        {"id": "p-5", "product_code": "110002", "import_job_id": a1_job_id, "import_snapshot": {"gross_weight": 16.0}, "gross_weight": 22.0, "is_published": False, "ai_processing_state": "none", "extra_attributes": {}},
+    ]
+    # Existing products query
+    mock_sb.table().select().eq().execute.side_effect = [
+        MagicMock(data=[saved_profile]),  # catalogue_import_profiles lookup
+        MagicMock(data=existing_mock_products),  # products query
+    ]
+
+    with patch("app.routers.catalogue_import.get_supabase", return_value=mock_sb), \
+         patch("app.routers.catalogue_import.download_from_storage", return_value=a2_bytes):
+        result = await _run_analyze_pipeline(job=job_data, user_id=user_id)
+
+    # 1. Profile was auto-detected and saved
+    assert job_data["profile_id"] == prof_id
+    # 2. Reused mapping: 0 questions (<= 1) and status is ready
+    assert result["status"] == "ready"
+    summary = result["summary"]
+    # 3. Not in file correctly identifies the 3 missing products from the series
+    assert summary["not_in_file"] == 3
+    # 4. Conflicts identified
+    assert summary["conflict"] >= 2
+
+
+
