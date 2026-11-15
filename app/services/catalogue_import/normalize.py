@@ -66,6 +66,10 @@ class NormalizedRow:
     make_to_order_days: Optional[int] = None
     extra_attributes: dict[str, str] = field(default_factory=dict)
     photo_refs: list[str] = field(default_factory=list)
+    sheet_photo_value: Optional[str] = None
+    photo_file: Any = None
+    extra_photos: list[Any] = field(default_factory=list)
+    photo_error: Optional[str] = None
     messages: list[dict[str, str]] = field(default_factory=list)
     action: Optional[str] = None  # create, update, unchanged, conflict, error, skipped, duplicate_skipped
     changes: Optional[dict[str, Any]] = None
@@ -396,6 +400,7 @@ def normalize_row(
         photo_val = str(raw.get(photo_col)).strip()
         if photo_val:
             norm.photo_refs.append(photo_val)
+            norm.sheet_photo_value = photo_val
 
     # 11. Title
     title_col = next((c for c in raw if column_map.get(c) == "title"), None)
