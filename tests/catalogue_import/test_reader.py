@@ -207,3 +207,88 @@ def test_zip_security():
     with pytest.raises(ReaderLimitExceeded) as exc:
         check_zip_security(fake_oversize)
     assert "exceeds maximum" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_read_endpoint_marks_job_failed_on_row_limit():
+    """Item 4: Over-limit file marks job status='failed' with 5000-row message in error."""
+    from unittest.mock import MagicMock, patch
+    from fastapi import HTTPException
+    from app.routers.catalogue_import import read_job
+
+    job_id = "a98a6c52-edd7-4793-98b1-09150d660232"
+    user_id = "fb20d512-d17b-4a3d-a793-9cce8a1eed5b"
+
+    mock_job = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "uploaded",
+        "source_kind": "file",
+        "source_files": [{"name": "F_too_many_rows.csv", "path": f"{user_id}/F_too_many_rows.csv"}],
+    }
+
+    mock_sb = MagicMock()
+    mock_sb.table().select().eq().execute.return_value = MagicMock(data=[mock_job])
+
+    file_path = FIXTURES_DIR / "F_too_many_rows.csv"
+    assert file_path.exists()
+    f_bytes = file_path.read_bytes()
+
+    with patch("app.routers.catalogue_import.get_owned_job", return_value=mock_job), \
+         patch("app.routers.catalogue_import.get_supabase", return_value=mock_sb), \
+         patch("app.routers.catalogue_import.download_from_storage", return_value=f_bytes):
+
+        with pytest.raises(HTTPException) as exc_info:
+            await read_job(job_id=job_id, user_id=user_id)
+
+        assert exc_info.value.status_code == 400
+        assert "5,000 rows" in exc_info.value.detail
+
+        # Check job updated to status='failed' with error and summary={'create': 0}
+        update_calls = mock_sb.table("catalogue_import_jobs").update.call_args_list
+        failed_update = next((c[0][0] for c in update_calls if c[0][0].get("status") == "failed"), None)
+        assert failed_update is not None, "catalogue_import_jobs was not updated with status='failed'"
+        assert "5,000 rows" in failed_update["error"]
+        assert failed_update["summary"] == {"create": 0}
+
+
+@pytest.mark.asyncio
+async def test_read_endpoint_clears_prior_rows_and_blocks_done_job():
+    """Item 5: /read clears rows from earlier read and refuses committing/done jobs."""
+    from unittest.mock import MagicMock, patch
+    from fastapi import HTTPException
+    from app.routers.catalogue_import import read_job
+
+    job_id = "11111111-1111-1111-1111-111111111111"
+    user_id = "fb20d512-d17b-4a3d-a793-9cce8a1eed5b"
+
+    # 1. Calling read on a done job is rejected
+    done_job = {"id": job_id, "wholesaler_id": user_id, "status": "done"}
+    with patch("app.routers.catalogue_import.get_owned_job", return_value=done_job):
+        with pytest.raises(HTTPException) as exc_info:
+            await read_job(job_id=job_id, user_id=user_id)
+        assert exc_info.value.status_code == 400
+        assert "Cannot re-read a job that is already committing or completed" in exc_info.value.detail
+
+    # 2. Re-reading an uploaded/read job deletes prior rows
+    active_job = {
+        "id": job_id,
+        "wholesaler_id": user_id,
+        "status": "read",
+        "source_kind": "file",
+        "source_files": [{"name": "small.csv", "path": f"{user_id}/small.csv"}],
+    }
+    mock_sb = MagicMock()
+    mock_sb.table().select().eq().execute.return_value = MagicMock(data=[active_job])
+
+    small_csv = b"Code,Title,Gross Wt\n101,Ring,5.0\n"
+    with patch("app.routers.catalogue_import.get_owned_job", return_value=active_job), \
+         patch("app.routers.catalogue_import.get_supabase", return_value=mock_sb), \
+         patch("app.routers.catalogue_import.download_from_storage", return_value=small_csv):
+
+        await read_job(job_id=job_id, user_id=user_id)
+
+        # Check delete was called on catalogue_import_rows for job_id
+        mock_sb.table.assert_any_call("catalogue_import_rows")
+        mock_sb.table("catalogue_import_rows").delete.assert_called_once()
+

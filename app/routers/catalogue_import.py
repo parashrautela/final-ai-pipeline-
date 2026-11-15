@@ -42,7 +42,11 @@ from app.services.catalogue_import.photos import (
     match_photos_to_rows,
     process_loose_files,
 )
-from app.services.catalogue_import.reader import RawRow, read_source_file
+from app.services.catalogue_import.reader import (
+    RawRow,
+    ReaderLimitExceeded,
+    read_source_file,
+)
 from app.services.catalogue_import.safe_fetch import (
     StorageSecurityError,
     validate_wholesaler_storage_path,
@@ -154,6 +158,12 @@ async def read_job(
     job = await get_owned_job(job_id, user_id)
     sb = get_supabase()
 
+    if job["status"] in ("committing", "done"):
+        raise HTTPException(status_code=400, detail="Cannot re-read a job that is already committing or completed.")
+
+    # Item 5: Delete any raw rows from an earlier read to ensure idempotency on re-read
+    sb.table("catalogue_import_rows").delete().eq("job_id", job_id).execute()
+
     sb.table("catalogue_import_jobs").update({"status": "reading"}).eq("id", job_id).execute()
 
     sheet_bytes = None
@@ -210,8 +220,12 @@ async def read_job(
             "row_count": row_count,
         }
 
-    except GoogleSheetError as exc:
-        sb.table("catalogue_import_jobs").update({"status": "failed", "error": str(exc)}).eq("id", job_id).execute()
+    except (GoogleSheetError, ReaderLimitExceeded) as exc:
+        sb.table("catalogue_import_jobs").update({
+            "status": "failed",
+            "error": str(exc),
+            "summary": {"create": 0},
+        }).eq("id", job_id).execute()
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.error(f"Failed reading job {job_id}: {exc}", exc_info=exc)
@@ -340,7 +354,7 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
 
     # 6. Fetch existing products for wholesaler
     existing_res = sb.table("products").select(
-        "id, product_code, import_snapshot, raw_image_url, images, is_published, extra_attributes, title, jewellery_type, category, style, size, metal_purity, gross_weight, stone_weight, net_weight, stock_available, make_to_order_days"
+        "id, product_code, import_snapshot, raw_image_url, images, is_published, extra_attributes, title, jewellery_type, category, style, size, metal_purity, gross_weight, stone_weight, net_weight, stock_available, make_to_order_days, import_job_id"
     ).eq("wholesaler_id", user_id).execute()
     existing_products = existing_res.data or []
 
@@ -350,8 +364,32 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
     else:
         # Match photos to sheet rows
         match_photos_to_rows(norm_rows, valid_photos, photo_summary)
+
+        # Item 6: Determine which existing products belong to the same import series/profile/sheet for not_in_file calculation
+        profile_id = job.get("profile_id")
+        gsheet_url = job.get("gsheet_url")
+        relevant_codes: Optional[set[str]] = None
+
+        if profile_id:
+            p_jobs = sb.table("catalogue_import_jobs").select("id").eq("wholesaler_id", user_id).eq("profile_id", profile_id).execute()
+            same_series_ids = {j["id"] for j in (p_jobs.data or []) if j.get("id")}
+            relevant_codes = {
+                p["product_code"].upper() for p in existing_products
+                if p.get("product_code") and p.get("import_job_id") in same_series_ids
+            }
+        elif gsheet_url:
+            g_jobs = sb.table("catalogue_import_jobs").select("id").eq("wholesaler_id", user_id).eq("gsheet_url", gsheet_url).execute()
+            same_series_ids = {j["id"] for j in (g_jobs.data or []) if j.get("id")}
+            relevant_codes = {
+                p["product_code"].upper() for p in existing_products
+                if p.get("product_code") and p.get("import_job_id") in same_series_ids
+            }
+        else:
+            # Standalone file upload with no linked profile: products from other files are unrelated
+            relevant_codes = set()
+
         # 3-Way merge
-        summary = merge_rows_with_existing(norm_rows, existing_products)
+        summary = merge_rows_with_existing(norm_rows, existing_products, relevant_previous_codes=relevant_codes)
 
     # 7. Update catalogue_import_rows in DB
     for r in norm_rows:

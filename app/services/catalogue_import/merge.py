@@ -106,6 +106,7 @@ def detect_intra_job_duplicates(rows: list[NormalizedRow]):
 def merge_rows_with_existing(
     rows: list[NormalizedRow],
     existing_products: list[dict[str, Any]],
+    relevant_previous_codes: Optional[set[str]] = None,
 ) -> dict[str, int]:
     """
     Performs the 3-Way Merge against existing products.
@@ -212,9 +213,11 @@ def merge_rows_with_existing(
             r.action = "unchanged"
             summary["unchanged"] += 1
 
-    # Calculate not_in_file for existing imported products absent from file
-    for pc, p in by_code.items():
-        if pc not in seen_codes_in_file:
+    # Calculate not_in_file for existing imported products absent from file.
+    # Only count products whose previous import came from the same series/profile/sheet.
+    candidate_codes = relevant_previous_codes if relevant_previous_codes is not None else set(by_code.keys())
+    for pc in candidate_codes:
+        if pc in by_code and pc not in seen_codes_in_file:
             summary["not_in_file"] += 1
 
     return summary

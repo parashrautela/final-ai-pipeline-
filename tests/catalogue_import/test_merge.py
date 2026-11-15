@@ -207,3 +207,28 @@ def test_net_weight_calculated_when_stone_weight_is_blank():
     assert norm.net_weight == 5.2
     assert any("net weight calculated as gross - stone" in m["text"] for m in norm.messages)
 
+
+def test_not_in_file_ignores_unrelated_products():
+    """Item 6: Standalone file imports ignore products from other sheets/profiles when computing not_in_file."""
+    # Existing products from a different sheet
+    existing = [
+        {"product_code": "OLD-01", "gross_weight": 5.0, "title": "Old Ring", "jewellery_type": "rings"},
+        {"product_code": "OLD-02", "gross_weight": 8.0, "title": "Old Chain", "jewellery_type": "chains"},
+    ]
+    # New row in a separate sheet
+    row = NormalizedRow(
+        sheet="Sheet1", row_number=1, raw={}, product_code="NEW-01",
+        gross_weight=6.0, title="New Pendant", jewellery_type="pendants"
+    )
+
+    # 1. Standalone import with relevant_previous_codes = set() -> not_in_file must be 0
+    summary_standalone = merge_rows_with_existing([row], existing, relevant_previous_codes=set())
+    assert summary_standalone["create"] == 1
+    assert summary_standalone["not_in_file"] == 0
+
+    # 2. Re-import of same series where OLD-01 is expected in the series but absent
+    summary_series = merge_rows_with_existing([row], existing, relevant_previous_codes={"OLD-01"})
+    assert summary_series["create"] == 1
+    assert summary_series["not_in_file"] == 1
+
+
