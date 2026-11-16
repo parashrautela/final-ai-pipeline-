@@ -69,7 +69,7 @@ async def commit_catalogue_import_job(
     if not already_claimed:
         # Atomic claim: update status to committing only if it is currently ready
         claim_res = sb.table("catalogue_import_jobs").update(
-            {"status": "committing"}
+            {"status": "committing", "committed_at": datetime.now(timezone.utc).isoformat()}
         ).eq("id", job_id).eq("status", "ready").execute()
 
         if not claim_res.data:
@@ -119,6 +119,7 @@ async def commit_catalogue_import_job(
     total_updated = 0
     total_unchanged = 0
     new_rejected: dict[str, str] = {}
+    photos_added = 0
 
     while True:
         # Fetch uncommitted rows (product_id is null and action in actionable list)
@@ -167,6 +168,10 @@ async def commit_catalogue_import_job(
                     prod_data["raw_image_url"] = raw_url
                 if extra_urls:
                     prod_data["images"] = extra_urls
+                photos_added += (1 if raw_url else 0) + len(extra_urls)
+                # Remember which links/files the photos came from, so a re-import of an
+                # unchanged photo doesn't upload it again (merge only reads MERGE_FIELDS).
+                prod_data["import_snapshot"] = {**norm, "_photo_refs": photo_refs}
 
                 if failed_photos:
                     row_msgs = list(row.get("messages") or [])
@@ -206,6 +211,7 @@ async def commit_catalogue_import_job(
                     merged_extra = {**existing_extra, **incoming_extra} if incoming_extra else existing_extra
                     snapshot = dict(norm)
                     snapshot["extra_attributes"] = merged_extra
+                    snapshot["_photo_refs"] = (existing.get("import_snapshot") or {}).get("_photo_refs")
 
                     sb.table("products").update({
                         "import_snapshot": snapshot,
@@ -224,11 +230,18 @@ async def commit_catalogue_import_job(
                     existing=existing,
                 )
 
-                # Photo update rules
+                # Photo update rules: skip re-uploading when the sheet's photo refs
+                # haven't changed since the last import and the product has a photo.
                 photo_refs = row.get("photo_refs") or []
-                raw_url, extra_urls, failed_photos = await _resolve_photo_urls(
-                    wholesaler_id, job_id, photo_refs, stored_photos
-                )
+                prev_refs = (existing.get("import_snapshot") or {}).get("_photo_refs")
+                if photo_refs and prev_refs == photo_refs and existing.get("raw_image_url"):
+                    raw_url, extra_urls, failed_photos = None, [], []
+                else:
+                    raw_url, extra_urls, failed_photos = await _resolve_photo_urls(
+                        wholesaler_id, job_id, photo_refs, stored_photos
+                    )
+                    photos_added += (1 if raw_url else 0) + len(extra_urls)
+                update_payload["import_snapshot"]["_photo_refs"] = photo_refs
                 if raw_url:
                     ai_state = existing.get("ai_processing_state") or "none"
                     if ai_state == "none":
@@ -271,12 +284,13 @@ async def commit_catalogue_import_job(
         "status": "done",
         "committed_at": now_iso,
     }
+    curr_ps = dict(job.get("photo_summary") or {})
+    curr_ps["attached"] = photos_added  # photos actually uploaded by this commit
     if new_rejected:
-        curr_ps = dict(job.get("photo_summary") or {})
         curr_rej = dict(curr_ps.get("rejected") or {})
         curr_rej.update(new_rejected)
         curr_ps["rejected"] = curr_rej
-        job_update_payload["photo_summary"] = curr_ps
+    job_update_payload["photo_summary"] = curr_ps
 
     sb.table("catalogue_import_jobs").update(job_update_payload).eq("id", job_id).execute()
 

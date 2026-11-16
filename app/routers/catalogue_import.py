@@ -639,13 +639,15 @@ async def commit_job_endpoint(
     # Atomic claim on /commit: only claim if status is 'ready'
     sb = get_supabase()
     claim_res = sb.table("catalogue_import_jobs").update(
-        {"status": "committing"}
+        # committed_at holds the commit START while committing; it's overwritten with the finish time
+        {"status": "committing", "committed_at": datetime.now(timezone.utc).isoformat()}
     ).eq("id", job_id).eq("wholesaler_id", user_id).eq("status", "ready").execute()
 
     if not claim_res.data:
         fresh = await get_owned_job(job_id, user_id)
         if fresh.get("status") == "committing":
-            created_at_str = fresh.get("created_at")
+            # Stale = 10 min since the commit started (not since the job was created)
+            created_at_str = fresh.get("committed_at") or fresh.get("created_at")
             is_stale = False
             if created_at_str:
                 try:
