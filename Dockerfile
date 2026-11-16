@@ -26,6 +26,8 @@ COPY --chown=appuser:appuser app/ ./app/
 
 # ── Runtime environment ───────────────────────────────────────────────────────
 ENV PYTHONUNBUFFERED=1 \
+    # Fewer malloc arenas so freed image memory goes back to the OS (Railway bills RAM held)
+    MALLOC_ARENA_MAX=2 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONHASHSEED=random \
     # Required so `from app.xxx import` resolves from /app

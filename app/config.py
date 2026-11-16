@@ -247,6 +247,11 @@ class Settings(BaseSettings):
 
     # Chamak & OpenAI
     OPENAI_API_KEY: str = ""
+    # Retailer photo search keeps two ONNX models and the catalogue index in RAM
+    # and re-scans every 60s (~1 GB always on). Off to stay inside the Railway
+    # budget; set IMAGE_SEARCH_ENABLED=true on Railway to bring it back.
+    IMAGE_SEARCH_ENABLED: bool = False
+
     # Video is an explicitly enabled, allowlisted pilot. Customer wallet pricing
     # is deliberately separate from this provider-unit budget.
     VIDEO_ENABLED: bool = False

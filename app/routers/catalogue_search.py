@@ -76,6 +76,8 @@ async def shutdown():
 @limiter.limit("12/minute")
 async def search(request: Request, photo: UploadFile = File(...), jewellery_type: str = Form(...),
                  user_id: str = Depends(verified_retailer)):
+    if not settings.IMAGE_SEARCH_ENABLED:
+        raise HTTPException(503, "Image search is temporarily unavailable. Please try again later.")
     # Use the app's existing shared IP limiter. Query photos are neither stored
     # nor sent to any third-party inference provider, and never logged.
     if not jewellery_type.strip() or len(jewellery_type) > 80:

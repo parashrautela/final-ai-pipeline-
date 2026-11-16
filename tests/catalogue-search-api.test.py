@@ -24,6 +24,7 @@ class SearchAccess(unittest.IsolatedAsyncioTestCase):
         app=FastAPI();app.include_router(api.router);app.state.limiter=api.limiter
         app.add_exception_handler(RateLimitExceeded,_rate_limit_exceeded_handler)
         self.client=httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="https://app.test")
+        flag=patch.object(api.settings,"IMAGE_SEARCH_ENABLED",True);flag.start();self.addCleanup(flag.stop)
         output=io.BytesIO();Image.new("RGB",(30,30),"white").save(output,"JPEG");self.photo=output.getvalue()
     async def asyncTearDown(self):await self.client.aclose()
     async def call(self,authorization=None,photo=None):
@@ -55,5 +56,9 @@ class SearchAccess(unittest.IsolatedAsyncioTestCase):
         rows=[dict(id="product",is_published=True,jewellery_type="necklace")]
         with patch.object(api,"get_supabase",return_value=self.db()),patch.object(api,"fetch_rows",return_value=rows),patch.object(api.index,"search",new=AsyncMock(side_effect=LookupError("Updating index"))):
             response=await self.call("Bearer test-session");self.assertEqual(response.status_code,503);self.assertEqual(response.headers['retry-after'],'10')
+    async def test_disabled_search_is_unavailable(self):
+        with patch.object(api.settings,"IMAGE_SEARCH_ENABLED",False),patch.object(api,"get_supabase",return_value=self.db()),patch.object(api.index,"search",new=AsyncMock()) as search:
+            response=await self.call("Bearer test-session")
+            self.assertEqual(response.status_code,503);search.assert_not_awaited()
 
 if __name__=="__main__":unittest.main()

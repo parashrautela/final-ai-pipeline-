@@ -122,7 +122,8 @@ async def lifespan(app: FastAPI):
         logger.info("DISABLE_BACKGROUND_WORKERS=1: Skipping background workers (manufacturing sweeps, outbox, backfill).")
 
     from app.routers.catalogue_search import startup as start_image_search, shutdown as stop_image_search
-    await start_image_search()
+    if settings.IMAGE_SEARCH_ENABLED:
+        await start_image_search()
     yield
     if not disable_workers:
         await manufacturing_scheduler.stop()
