@@ -453,8 +453,12 @@ async def match_photos_to_rows_async(
     photos: list[ProcessedPhoto],
     summary: PhotoSummary,
     url_fetch_enabled: bool = True,
+    already_imported: Optional[dict[str, str]] = None,
 ) -> None:
     """Match photos to rows in-place based on Section 8 rules (first hit wins).
+
+    already_imported maps PRODUCT CODE (upper) -> the photo link already imported for it. A row
+    whose link is unchanged isn't downloaded again (keeps nightly sheet checks light).
 
     Asynchronous variant that downloads photo URLs in threads bounded by PHOTO_SEMAPHORE (4)
     without blocking the FastAPI event loop (Item 18).
@@ -464,6 +468,11 @@ async def match_photos_to_rows_async(
         photo_by_basename.setdefault(p.basename, []).append(p)
 
     used_photos: set[str] = set()
+    already_imported = already_imported or {}
+
+    def _unchanged_link(r: Any) -> bool:
+        link = (r.sheet_photo_value or "").strip()
+        return bool(link) and already_imported.get((r.product_code or "").strip().upper()) == link
 
     row_by_code: dict[str, Any] = {}
     for r in rows:
@@ -495,6 +504,7 @@ async def match_photos_to_rows_async(
             and not r.is_error
             and r.action not in ("skipped", "duplicate_skipped")
             and (r.sheet_photo_value or "").strip().lower().startswith("http")
+            and not _unchanged_link(r)
         ]
 
         if rows_needing_url:
@@ -594,6 +604,6 @@ async def match_photos_to_rows_async(
     for r in rows:
         if not r.product_code or r.is_error or r.action in ("skipped", "duplicate_skipped"):
             continue
-        if not r.photo_file:
+        if not r.photo_file and not _unchanged_link(r):
             no_photo_codes.add(r.product_code)
     summary.products_without_photo = sorted(no_photo_codes)

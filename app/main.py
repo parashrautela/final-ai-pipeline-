@@ -106,6 +106,7 @@ async def lifespan(app: FastAPI):
     task = None
     video_task = None
     catch_up = None
+    sheet_task = None
 
     if not disable_workers:
         # Start the background worker as soon as the server is ready.
@@ -118,6 +119,9 @@ async def lifespan(app: FastAPI):
         # single query once everything has been converted.
         catch_up = asyncio.create_task(backfill_on_startup())
         await manufacturing_scheduler.start()
+        # Nightly 12 am (IST) check of linked Google Sheets
+        from app.services.catalogue_import.sheet_sync import nightly_loop
+        sheet_task = asyncio.create_task(nightly_loop())
     else:
         logger.info("DISABLE_BACKGROUND_WORKERS=1: Skipping background workers (manufacturing sweeps, outbox, backfill).")
 
@@ -135,6 +139,8 @@ async def lifespan(app: FastAPI):
         task.cancel()
     if catch_up:
         catch_up.cancel()
+    if sheet_task:
+        sheet_task.cancel()
     if task:
         try:
             await task

@@ -241,7 +241,7 @@ async def commit_catalogue_import_job(
                         wholesaler_id, job_id, photo_refs, stored_photos
                     )
                     photos_added += (1 if raw_url else 0) + len(extra_urls)
-                update_payload["import_snapshot"]["_photo_refs"] = photo_refs
+                update_payload["import_snapshot"]["_photo_refs"] = photo_refs or prev_refs
                 if raw_url:
                     ai_state = existing.get("ai_processing_state") or "none"
                     if ai_state == "none":
@@ -293,6 +293,8 @@ async def commit_catalogue_import_job(
     job_update_payload["photo_summary"] = curr_ps
 
     sb.table("catalogue_import_jobs").update(job_update_payload).eq("id", job_id).execute()
+    # A linked sheet's waiting preview is applied now: clear it (no-op for ordinary imports)
+    sb.table("catalogue_import_profiles").update({"pending_job_id": None}).eq("pending_job_id", job_id).execute()
 
     # 6. Save or update wholesaler import profile
     await _update_or_create_profile(sb, job, wholesaler_id)

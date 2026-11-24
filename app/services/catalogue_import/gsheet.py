@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import io
 import re
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -80,7 +80,10 @@ async def fetch_google_sheet_xlsx(url: str, timeout: float = 30.0) -> tuple[byte
             if not content.startswith(b"PK\x03\x04"):
                 raise GoogleSheetError(UNSHARED_SHEET_MESSAGE)
 
-            filename = f"google_sheet_{spreadsheet_id}.xlsx"
+            # Google names the download after the sheet; keep that title so the app can show it
+            title_match = re.search(r"filename\*=UTF-8''([^;]+)", resp.headers.get("content-disposition", ""))
+            title = unquote(title_match.group(1)) if title_match else ""
+            filename = title if title.lower().endswith(".xlsx") and len(title) < 200 else f"google_sheet_{spreadsheet_id}.xlsx"
             return content, filename
 
     except GoogleSheetError:

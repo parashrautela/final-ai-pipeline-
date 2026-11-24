@@ -51,6 +51,7 @@ from app.services.catalogue_import.reader import (
     ReaderLimitExceeded,
     read_source_file,
 )
+from app.services.catalogue_import.sheet_sync import SCHEDULE_DAILY, check_once, list_linked_sheets, sheet_state
 from app.services.catalogue_import.safe_fetch import (
     StorageSecurityError,
     validate_wholesaler_storage_path,
@@ -409,9 +410,12 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
         )
         matched_profile = find_best_matching_profile(headers, prof_list_res.data or [])
         if matched_profile:
-            profile = matched_profile
-            job["profile_id"] = matched_profile["id"]
-            sb.table("catalogue_import_jobs").update({"profile_id": matched_profile["id"]}).eq("id", job_id).execute()
+            profile = matched_profile  # its column mapping is reused either way
+            # A job belongs to a profile only when both point at the same Google Sheet (or both at none):
+            # one profile per linked sheet, so a CSV with the same headers never takes over a sheet's link.
+            if (matched_profile.get("gsheet_url") or None) == (job.get("gsheet_url") or None):
+                job["profile_id"] = matched_profile["id"]
+                sb.table("catalogue_import_jobs").update({"profile_id": matched_profile["id"]}).eq("id", job_id).execute()
 
     # 3. Analyze mapping
     answers = job.get("answers") or {}
@@ -442,7 +446,9 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
             "updated_at": now_iso,
         }).eq("id", job["profile_id"]).execute()
     elif headers:
-        prof_name = sheet_name.rsplit(".", 1)[0].replace("_", " ").title() if sheet_name else "Import Profile"
+        base_name = sheet_name.rsplit(".", 1)[0] if sheet_name else ""
+        # A Google Sheet keeps its own title; a file name gets tidied
+        prof_name = (base_name if job.get("gsheet_url") else base_name.replace("_", " ").title()) or "Import Profile"
         new_prof_payload = {
             "wholesaler_id": user_id,
             "name": prof_name,
@@ -497,7 +503,12 @@ async def _run_analyze_pipeline(job: dict[str, Any], user_id: str) -> dict[str, 
         summary = {"create": 0, "update": 0, "unchanged": len(existing_products), "conflict": 0, "not_in_file": 0, "error": 0, "skipped": 0, "duplicate_skipped": 0}
     else:
         # Match photos to sheet rows (async with bounded thread downloads for URLs)
-        await match_photos_to_rows_async(norm_rows, valid_photos, photo_summary)
+        already_imported = {}
+        for p in existing_products:
+            refs = (p.get("import_snapshot") or {}).get("_photo_refs") or []
+            if p.get("product_code") and p.get("raw_image_url") and len(refs) == 1 and str(refs[0]).lower().startswith("http"):
+                already_imported[p["product_code"].strip().upper()] = str(refs[0]).strip()
+        await match_photos_to_rows_async(norm_rows, valid_photos, photo_summary, already_imported=already_imported)
 
         # Item 6: Determine which existing products belong to the same import series/profile/sheet for not_in_file calculation
         profile_id = job.get("profile_id")
@@ -785,6 +796,10 @@ async def cancel_job(
 
     sb = get_supabase()
     sb.table("catalogue_import_jobs").update({"status": "cancelled"}).eq("id", job_id).execute()
+    # A cancelled linked-sheet update must be offered again at the next check
+    sb.table("catalogue_import_profiles").update(
+        {"pending_job_id": None, "last_content_hash": None}
+    ).eq("pending_job_id", job_id).execute()
     return {"status": "cancelled"}
 
 
@@ -818,3 +833,47 @@ async def sync_profile(
 
     new_job = new_job_res.data[0]
     return {"job_id": new_job["id"], "status": "uploaded"}
+
+
+# ---------------------------------------------------------------------------
+# Linked Google Sheets (see services/catalogue_import/sheet_sync.py)
+# ---------------------------------------------------------------------------
+
+class SheetSettings(BaseModel):
+    auto_sync: Optional[bool] = None
+
+
+def _owned_sheet(profile_id: str, user_id: str) -> dict[str, Any]:
+    rows = get_supabase().table("catalogue_import_profiles").select("*").eq("id", profile_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Linked sheet not found.")
+    if str(rows[0]["wholesaler_id"]) != str(user_id):
+        raise HTTPException(status_code=403, detail="Forbidden.")
+    if not rows[0].get("gsheet_url"):
+        raise HTTPException(status_code=400, detail="This import is not linked to a Google Sheet.")
+    return rows[0]
+
+
+@router.get("/sheets")
+async def list_sheets(user_id: str = Depends(require_user_id)):
+    """The wholesaler's linked Google Sheets, each with its waiting update (if any)."""
+    return {"sheets": list_linked_sheets(user_id)}
+
+
+@router.post("/profiles/{profile_id}/check")
+async def check_sheet(profile_id: str, user_id: str = Depends(require_user_id)):
+    """Fetch the sheet now ("Sync now" / opening it in the app). Never writes products."""
+    return await check_once(_owned_sheet(profile_id, user_id))
+
+
+@router.patch("/profiles/{profile_id}")
+async def update_sheet(profile_id: str, body: SheetSettings, user_id: str = Depends(require_user_id)):
+    """Turn the nightly 12 am check on or off."""
+    profile = _owned_sheet(profile_id, user_id)
+    sb = get_supabase()
+    if body.auto_sync is not None:
+        res = sb.table("catalogue_import_profiles").update(
+            {"sync_schedule": SCHEDULE_DAILY if body.auto_sync else None}
+        ).eq("id", profile_id).execute()
+        profile = (res.data or [profile])[0]
+    return sheet_state(sb, profile)
